@@ -1,0 +1,34 @@
+# Rule mẫu SQL Injection. File dạng DANH SÁCH (nhiều rule trong một file).
+- id: sqli-boolean-or
+  name: SQL Injection boolean OR/AND tautology
+  attack_type: sql_injection
+  severity: high
+  target: any
+  # Bắt: 1' OR '1'='1  và các biến thể AND 1=1
+  pattern: "(?i)['\"\\s](or|and)\\s+['\"]?\\d+['\"]?\\s*=\\s*['\"]?\\d+"
+  description: Boolean-based tautology (OR/AND 1=1) dùng để bypass điều kiện
+
+- id: sqli-union-select
+  name: SQL Injection UNION SELECT
+  attack_type: sql_injection
+  severity: critical
+  target: any
+  # Bắt: UNION SELECT ... FROM
+  pattern: "(?i)union[\\s/*]+select\\b"
+  description: UNION SELECT để trích xuất dữ liệu từ bảng khác
+
+- id: sqli-time-based
+  name: SQL Injection time-based / enumeration
+  attack_type: sql_injection
+  severity: high
+  target: any
+  pattern: "(?i)(sleep\\(\\s*\\d|benchmark\\(|pg_sleep\\(|waitfor\\s+delay|information_schema)"
+  description: Hàm trễ thời gian (blind SQLi) hoặc liệt kê information_schema
+
+- id: sqli-quote-comment
+  name: SQL Injection dấu nháy + comment
+  attack_type: sql_injection
+  severity: medium
+  target: any
+  pattern: "(?i)('|%27)\\s*(--|#|;|/\\*)"
+  description: Dấu nháy kèm comment/kết thúc câu lệnh (' -- , '#, ';)

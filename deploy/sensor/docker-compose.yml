@@ -1,0 +1,66 @@
+# LOẠI 1 — Sensor thu thập (Người 1): CẮM VÀO NGINX/APACHE CỦA MỘT APP BẤT KỲ.
+# Chỉ có C1: đọc access log của app, gửi log.raw.ingested về bus trung tâm.
+# Nhẹ, deploy một bản cho MỖI app cần giám sát; không đụng Platform/Pipeline.
+#
+# Chạy thử độc lập (kèm web demo):   docker compose --profile demo up -d
+# Cắm vào Nginx thật của app:        đặt SENSOR_NGINX_LOG_DIR + C1_DOMAIN trong .env, rồi:
+#                                    docker compose up -d c1-ingestion
+name: waf-sensor
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  c1-ingestion:
+    image: waf/c1-ingestion:dev
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      EVENT_BUS_URL: ${EVENT_BUS_URL:?set EVENT_BUS_URL (amqp://user:pass@<hub>:5672/)}
+      EVENT_EXCHANGE: waf.events
+      SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://p1-scope:8000}
+      LOG_DIR: /var/log/waf
+      # Đặt domain của app khi file log là access.log (không suy được từ tên file).
+      C1_DOMAIN: ${C1_DOMAIN:-}
+      C1_READ_EXISTING: ${C1_READ_EXISTING:-false}
+    volumes:
+      # Mặc định dùng volume của web demo; production đặt SENSOR_NGINX_LOG_DIR=/var/log/nginx
+      # (thư mục log Nginx của app) để bind trực tiếp, chỉ đọc.
+      - ${SENSOR_NGINX_LOG_DIR:-sensor-nginx-logs}:/var/log/waf/nginx:ro
+      - ${SENSOR_APACHE_LOG_DIR:-sensor-apache-logs}:/var/log/waf/apache:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,time,sys; sys.exit(0 if time.time()-os.path.getmtime('/tmp/alive')<30 else 1)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Web mục tiêu DEMO để thử sensor độc lập (production dùng Nginx sẵn có của app).
+  web-nginx:
+    profiles: [demo]
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    ports:
+      - "127.0.0.1:${WEB_NGINX_PORT:-8081}:80"
+    volumes:
+      - ../../infra/web-nginx/conf.d:/etc/nginx/conf.d:ro
+      - ../../infra/web-nginx/html:/usr/share/nginx/html:ro
+      - sensor-nginx-logs:/var/log/waf/nginx
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+networks:
+  waf-net:
+    external: true
+    name: waf-net
+
+volumes:
+  sensor-nginx-logs:
+  sensor-apache-logs:

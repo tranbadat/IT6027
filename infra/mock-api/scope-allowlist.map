@@ -1,0 +1,6 @@
+# Domain / ứng dụng mà mock Scope Service coi là HỢP LỆ (mọi giá trị khác bị từ chối).
+# Cú pháp nginx map (hostnames): "<tên> 1;". Hỗ trợ wildcard dạng *.example.local
+# Sau khi sửa: `make mock-reload`
+shop.local  1;
+blog.local  1;
+shop-app    1;

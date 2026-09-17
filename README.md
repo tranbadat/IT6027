@@ -73,6 +73,54 @@ D1 là lõi kỹ thuật của đề tài — không chỉ nạp lại bộ rule
 | P4 | Alerting — webhook/email, ngưỡng cảnh báo riêng theo domain |
 | P5 | Dashboard realtime — traffic theo domain, top loại tấn công, top IP nguồn, lịch sử cảnh báo |
 
+## Chạy hệ thống
+
+Yêu cầu: Docker Compose 2.30 trở lên, `make`, `curl`, `jq`, `openssl`.
+
+```bash
+make up      # tạo .env (mật khẩu ngẫu nhiên), build & khởi động TOÀN BỘ hệ thống
+make demo    # gửi request thử (gồm SQLi/XSS/path traversal) tới web mục tiêu
+make e2e     # nghiệm thu end-to-end toàn pipeline theo "định nghĩa hoàn thành"
+make smoke   # kiểm tra hạ tầng
+```
+
+Toàn bộ 11 service (C1–C3, D1–D3, P1–P5) viết bằng Python, dùng chung image nền `waf/base:dev` và thư viện `services/common/`. Sau `make up`:
+
+- **Dashboard realtime (P5):** http://localhost:8080 — lưu lượng theo domain, top loại tấn công, top IP nguồn, lịch sử cảnh báo, feed trực tiếp.
+- **Email cảnh báo (P4):** http://localhost:8025 (Mailpit).
+- **RabbitMQ UI:** http://localhost:15672 · **Swagger UI:** http://localhost:8090.
+
+Luồng thật: gửi request (kể cả SQLi) tới Nginx mục tiêu → C1 tail log → C2 chuẩn hoá → C3 enrichment → D1 khớp rule tự viết → D3 chấm điểm → P4 cảnh báo (email + webhook) → P5 hiển thị gần như tức thời. Log ngoài phạm vi Scope Service không bị xử lý.
+
+Chạy một phần (vd hạ tầng + mock khi service chưa xong): đặt `COMPOSE_PROFILES=mock,docs` và `SCOPE_SERVICE_URL=AUTH_SERVICE_URL=http://mock-api` trong `.env`. Chi tiết: [`docs/infrastructure.md`](docs/infrastructure.md) và [`services/README.md`](services/README.md).
+
+## Triển khai tách 3 tầng (deploy độc lập)
+
+Ngoài bản tất-cả-trong-một ở trên, hệ thống còn tách thành **3 stack deploy riêng** (thư mục [`deploy/`](deploy/)), nối nhau qua network `waf-net`, để cắm phần thu thập vào Nginx/Apache của app bất kỳ mà không đụng phần trung tâm:
+
+| Loại | Stack | Thành phần | Deploy ở đâu |
+|---|---|---|---|
+| 1 | Sensor | C1 | mỗi app cần giám sát (cạnh Nginx/Apache của app) |
+| 2 | Pipeline | C2, C3, D1, D2, D3 | trung tâm |
+| 3 | Platform | RabbitMQ, Postgres, P1–P5, gateway | trung tâm (hub) |
+
+```bash
+make deploy-up     # tạo waf-net, build image, sinh .env khớp nhau, dựng cả 3 stack
+make deploy-ps     # trạng thái · make deploy-down để dừng
+```
+
+Cắm sensor vào Nginx thật của một app: đặt `SENSOR_NGINX_LOG_DIR` + `C1_DOMAIN` trong `deploy/sensor/.env`, thêm domain vào scope, rồi `docker compose up -d c1-ingestion`. Parser nhận cả log `combined` chuẩn lẫn `waf_combined`. Hướng dẫn đầy đủ: [`docs/deployment.md`](docs/deployment.md).
+
+### Giám sát (Prometheus + Grafana)
+
+Stack add-on `deploy/observability` cung cấp thống kê log & lỗi phát hiện, không sửa service nào:
+
+```bash
+make obs-up      # Prometheus + Grafana + metrics-exporter (đọc từ event bus + RabbitMQ)
+```
+
+Grafana: http://localhost:3000 (dashboard "WAF Log Analyzer — Tổng quan" tự nạp sẵn) · Prometheus: http://localhost:9090. Chi tiết + PromQL mẫu: [`docs/observability.md`](docs/observability.md).
+
 ## Nguyên tắc phát triển
 
 - **Interface first**: Người 3 định nghĩa OpenAPI/JSON schema và dựng mock server cho Scope Service, Event Bus, Auth ngay tuần 1 để ba người phát triển song song.
@@ -112,3 +160,6 @@ Kèm theo:
 ## Tài liệu
 
 - [`ke_hoach_waf_log_analyzer.md`](ke_hoach_waf_log_analyzer.md) — kế hoạch triển khai đầy đủ: phân công, chi tiết từng module, lịch trình 4 tuần.
+- [`docs/infrastructure.md`](docs/infrastructure.md) — hạ tầng Docker Compose: thành phần, profile, log format, gateway, chuyển mock sang service thật, xử lý sự cố.
+- [`services/README.md`](services/README.md) — quy ước và biến môi trường cho từng service.
+- [`contracts/`](contracts/) — OpenAPI (Scope, Auth), event envelope schema, bảng event → queue.

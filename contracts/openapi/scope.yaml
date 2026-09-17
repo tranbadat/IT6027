@@ -1,0 +1,135 @@
+openapi: 3.1.0
+info:
+  title: P1 Scope Service
+  version: 0.1.0
+  description: |
+    Xác nhận một domain hoặc ứng dụng có nằm trong phạm vi được phép xử lý log hay không.
+    Mọi service (C1–C3, D1–D3) PHẢI gọi `GET /scope/check` trước khi xử lý log của một domain mới,
+    và có thể cache kết quả trong `cache_ttl_seconds` giây.
+
+    - Gọi nội bộ (service → service): `http://<scope-service>/scope/check`
+    - Gọi từ ngoài qua gateway: `http://localhost:8080/api/scope/check` (cần JWT)
+  license:
+    name: Internal
+    identifier: LicenseRef-Internal
+servers:
+  - url: http://localhost:8080/api
+    description: Qua API gateway
+  - url: http://localhost:4010
+    description: Mock (profile mock)
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+tags:
+  - name: scope
+    description: Kiểm tra phạm vi domain / ứng dụng
+paths:
+  /scope/check:
+    get:
+      tags: [scope]
+      operationId: checkScope
+      summary: Kiểm tra domain/ứng dụng có trong phạm vi
+      description: Truyền đúng một trong hai tham số `domain` hoặc `app`. Nếu có cả hai, `domain` được ưu tiên.
+      parameters:
+        - name: domain
+          in: query
+          required: false
+          description: Hostname của domain cần kiểm tra.
+          schema:
+            type: string
+            maxLength: 253
+            pattern: '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$'
+          example: shop.local
+        - name: app
+          in: query
+          required: false
+          description: Tên ứng dụng cần kiểm tra.
+          schema:
+            type: string
+            maxLength: 253
+            pattern: '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$'
+          example: shop-app
+      responses:
+        '200':
+          description: Kết quả kiểm tra (kể cả khi bị từ chối).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScopeCheckResult'
+              examples:
+                allowed:
+                  value:
+                    target: shop.local
+                    target_type: domain
+                    allowed: true
+                    reason: in scope allowlist
+                    cache_ttl_seconds: 60
+                denied:
+                  value:
+                    target: internal.local
+                    target_type: domain
+                    allowed: false
+                    reason: not in scope allowlist
+                    cache_ttl_seconds: 60
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: waf_token
+  schemas:
+    ScopeCheckResult:
+      type: object
+      additionalProperties: false
+      required: [target, target_type, allowed, reason, cache_ttl_seconds]
+      properties:
+        target:
+          type: string
+          description: Giá trị domain hoặc app đã kiểm tra.
+        target_type:
+          type: string
+          enum: [domain, app]
+        allowed:
+          type: boolean
+          description: true nếu được phép xử lý log của target này.
+        reason:
+          type: string
+        cache_ttl_seconds:
+          type: integer
+          minimum: 0
+          description: Thời gian client được phép cache kết quả.
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+  responses:
+    BadRequest:
+      description: Thiếu hoặc sai tham số.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: invalid_request
+            message: query parameter domain or app is required and must be a valid name
+    Unauthorized:
+      description: Thiếu hoặc sai token (khi gọi qua gateway).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: unauthorized
+            message: missing or invalid bearer token

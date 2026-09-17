@@ -1,0 +1,74 @@
+# QUAN SÁT (add-on) — Prometheus + Grafana + metrics-exporter.
+# Không bắt buộc; bật/tắt độc lập. Cắm vào waf-net để đọc metric từ metrics-exporter và RabbitMQ.
+#
+# Chạy sau khi Platform (+ Pipeline/Sensor) đã lên:
+#        cp .env.example .env  &&  docker compose up -d
+# Xem:   Grafana http://localhost:3000   ·   Prometheus http://localhost:9090
+name: waf-observability
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  # Tổng hợp metric bảo mật/nghiệp vụ từ event bus (queue q.metrics) -> /metrics.
+  metrics-exporter:
+    image: waf/metrics-exporter:dev
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      EVENT_BUS_URL: ${EVENT_BUS_URL:?set EVENT_BUS_URL (amqp://user:pass@<hub>:5672/)}
+      EVENT_EXCHANGE: waf.events
+      EVENT_QUEUE: q.metrics
+      HTTP_PORT: "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/metrics')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ../../infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"      # xem dashboard không cần đăng nhập (demo)
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../../infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+
+networks:
+  waf-net:
+    external: true
+    name: waf-net
+
+volumes:
+  prometheus-data:
+  grafana-data:

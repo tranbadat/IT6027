@@ -1,0 +1,11 @@
+# Pipeline mẫu cho domain shop.local — P3 dùng để theo dõi tiến độ xử lý log.
+# Thứ tự stage khớp luồng event: log.raw.ingested -> ... -> alert.triggered.
+pipeline: shop.local
+domain: shop.local
+stages:
+  - ingestion   # log.raw.ingested  (c1-ingestion)
+  - normalize   # log.normalized    (c2-parser)
+  - enrich      # log.enriched      (c3-enrichment)
+  - detect      # attack.detected   (d1-rule-engine)
+  - score       # anomaly.scored    (d3-anomaly-scorer)
+  - alert       # alert.triggered   (d3-anomaly-scorer)

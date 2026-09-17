@@ -1,0 +1,149 @@
+openapi: 3.1.0
+info:
+  title: P2 Auth
+  version: 0.1.0
+  description: |
+    Cấp và xác thực JWT (HS256, khoá `JWT_SECRET`) cho API nội bộ.
+
+    API gateway gọi `GET /auth/verify` qua `auth_request` cho mọi route cần xác thực:
+    trả 2xx thì request được chuyển tiếp, kèm header `X-Auth-Subject` và `X-Auth-Roles`
+    để service phía sau biết ai đang gọi.
+
+    Token được gửi bằng header `Authorization: Bearer <jwt>`, hoặc bằng cookie `waf_token`
+    (dành cho trình duyệt: `EventSource`/`WebSocket` không đặt được header).
+    `POST /auth/token` trả token trong body và đồng thời đặt cookie này.
+  license:
+    name: Internal
+    identifier: LicenseRef-Internal
+servers:
+  - url: http://localhost:8080/api
+    description: Qua API gateway
+  - url: http://localhost:4010
+    description: Mock (profile mock)
+tags:
+  - name: auth
+    description: Cấp và xác thực JWT
+paths:
+  /auth/token:
+    post:
+      tags: [auth]
+      operationId: issueToken
+      summary: Cấp access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRequest'
+            example:
+              client_id: dashboard
+              client_secret: change-me
+      responses:
+        '200':
+          description: Cấp token thành công.
+          headers:
+            Set-Cookie:
+              description: '`waf_token=<jwt>; Path=/; HttpOnly; SameSite=Strict; Max-Age=<expires_in>`'
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+  /auth/verify:
+    get:
+      tags: [auth]
+      operationId: verifyToken
+      summary: Xác thực bearer token (dùng bởi gateway)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Token hợp lệ.
+          headers:
+            X-Auth-Subject:
+              description: Chủ thể của token (claim `sub`).
+              schema:
+                type: string
+            X-Auth-Roles:
+              description: Danh sách role, phân tách bằng dấu phẩy.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenClaims'
+        '401':
+          $ref: '#/components/responses/Error'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: waf_token
+  schemas:
+    TokenRequest:
+      type: object
+      additionalProperties: false
+      required: [client_id, client_secret]
+      properties:
+        client_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        client_secret:
+          type: string
+          minLength: 1
+          maxLength: 256
+          writeOnly: true
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          minimum: 1
+          description: Số giây token còn hiệu lực.
+    TokenClaims:
+      type: object
+      required: [sub, roles]
+      properties:
+        sub:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, analyst, service]
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+  responses:
+    Error:
+      description: Lỗi.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

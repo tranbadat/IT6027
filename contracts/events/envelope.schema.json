@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tranbadat/IT6027/contracts/events/envelope.schema.json",
+  "title": "WAF Log Analyzer event envelope",
+  "description": "Vỏ chung cho mọi event trên exchange waf.events. Nội dung `data` do module phát event định nghĩa (xem contracts/events/README.md).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event", "event_id", "timestamp", "source", "domain", "data"],
+  "properties": {
+    "event": {
+      "description": "Tên event, đồng thời là routing key khi publish.",
+      "type": "string",
+      "enum": [
+        "log.raw.ingested",
+        "log.normalized",
+        "log.enriched",
+        "attack.detected",
+        "anomaly.scored",
+        "alert.triggered",
+        "stage.completed"
+      ]
+    },
+    "event_id": {
+      "description": "UUID duy nhất của event, dùng để consumer loại bỏ bản trùng (bus giao ít nhất một lần).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "schema_version": {
+      "description": "Phiên bản schema của `data`.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 1
+    },
+    "request_id": {
+      "description": "ID của một dòng log / request, sinh tại C1 và giữ nguyên qua các bước sau.",
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "description": "ID phiên truy cập do C3 gom theo IP + cookie.",
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "description": "Thời điểm phát event, RFC 3339 kèm múi giờ.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "description": "Tên service phát event, trùng tên service trong docker-compose.yml.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "domain": {
+      "description": "Domain / ứng dụng mà event thuộc về. Đã được xác nhận qua Scope Service.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "if": {
+    "properties": { "event": { "const": "stage.completed" } }
+  },
+  "else": {
+    "anyOf": [
+      { "required": ["request_id"] },
+      { "required": ["session_id"] }
+    ]
+  }
+}

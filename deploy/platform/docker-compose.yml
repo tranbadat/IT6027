@@ -1,0 +1,191 @@
+# LOẠI 3 — Platform / Hub trung tâm (Người 3): quản trị & kết quả sau xử lý.
+# Gồm backbone dùng chung (RabbitMQ + Postgres) + P1..P5 + gateway.
+# Dựng 1 lần cho cả hệ thống. Pipeline (Loại 2) và Sensor (Loại 1) trỏ về đây.
+#
+# Chạy:  docker network create waf-net   (một lần, hoặc `make net` ở gốc repo)
+#        cp .env.example .env  &&  chỉnh secret
+#        docker compose up -d --wait
+name: waf-platform
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+x-svc-env: &svc-env
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  EVENT_BUS_URL: amqp://${RABBITMQ_USER:?set RABBITMQ_USER}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}@rabbitmq:5672/
+  EVENT_EXCHANGE: waf.events
+  DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-waf}
+  SCOPE_SERVICE_URL: http://p1-scope:8000
+  AUTH_SERVICE_URL: http://p2-auth:8000
+  HTTP_PORT: "8000"
+
+x-svc: &svc
+  restart: unless-stopped
+  logging: *logging
+  networks: [waf-net]
+  depends_on:
+    rabbitmq: { condition: service_healthy }
+    postgres: { condition: service_healthy }
+
+x-nginx-healthcheck: &nginx-healthcheck
+  test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/healthz"]
+  interval: 10s
+  timeout: 3s
+  retries: 3
+
+services:
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    hostname: rabbitmq
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_AMQP_PORT:-5672}:5672"   # mở cho Sensor/Pipeline ở máy khác kết nối
+      - "127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ../../infra/rabbitmq:/etc/rabbitmq/waf:ro
+      - ../../infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    post_start:
+      - command: ["sh", "/etc/rabbitmq/waf/load-topology.sh", "--boot"]
+        user: rabbitmq
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/topology-ready && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-waf}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../../infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+
+  p1-scope:
+    <<: *svc
+    image: waf/p1-scope:dev
+    environment:
+      <<: *svc-env
+      SCOPE_ALLOWLIST: ${SCOPE_ALLOWLIST:-shop.local,blog.local,shop-app}
+
+  p2-auth:
+    <<: *svc
+    image: waf/p2-auth:dev
+    environment:
+      <<: *svc-env
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+
+  p3-orchestrator:
+    <<: *svc
+    image: waf/p3-orchestrator:dev
+    environment:
+      <<: *svc-env
+      EVENT_QUEUE: q.p3-orchestrator
+      PIPELINES_DIR: /config/pipelines
+    volumes:
+      - ../../config/pipelines:/config/pipelines:ro
+
+  p4-alerting:
+    <<: *svc
+    image: waf/p4-alerting:dev
+    environment:
+      <<: *svc-env
+      EVENT_QUEUE: q.p4-alerting
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      ALERT_EMAIL_FROM: waf-alerts@waf.local
+      ALERT_EMAIL_TO: soc@waf.local
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://webhook-sink:8080/alerts}
+
+  p5-dashboard:
+    <<: *svc
+    image: waf/p5-dashboard:dev
+    environment:
+      <<: *svc-env
+      EVENT_QUEUE: q.p5-dashboard
+
+  gateway:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    ports:
+      - "${GATEWAY_PORT:-8080}:80"
+    environment:
+      AUTH_SERVICE_URL: http://p2-auth:8000
+      SCOPE_SERVICE_URL: http://p1-scope:8000
+      RULES_SERVICE_URL: ${RULES_SERVICE_URL:-http://d2-rule-manager:8000}   # ở stack Pipeline
+      PIPELINE_SERVICE_URL: http://p3-orchestrator:8000
+      ALERTING_SERVICE_URL: http://p4-alerting:8000
+      DASHBOARD_SERVICE_URL: http://p5-dashboard:8000
+    volumes:
+      - ../../infra/gateway/templates:/etc/nginx/templates:ro
+      - ../../infra/gateway/snippets:/etc/nginx/snippets:ro
+    healthcheck: *nginx-healthcheck
+
+  # Nhận webhook cảnh báo khi demo (profile dev).
+  webhook-sink:
+    profiles: [dev]
+    image: mendhak/http-https-echo:37
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    environment:
+      HTTP_PORT: "8080"
+      HTTPS_PORT: "8443"
+    ports:
+      - "127.0.0.1:${WEBHOOK_SINK_PORT:-4020}:8080"
+
+  # Xem OpenAPI (profile docs).
+  swagger-ui:
+    profiles: [docs]
+    image: swaggerapi/swagger-ui:v5.27.1
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    environment:
+      URLS: '[{"url":"contracts/scope.yaml","name":"P1 Scope Service"},{"url":"contracts/auth.yaml","name":"P2 Auth"}]'
+    ports:
+      - "127.0.0.1:${SWAGGER_UI_PORT:-8090}:8080"
+    volumes:
+      - ../../contracts/openapi:/usr/share/nginx/html/contracts:ro
+
+networks:
+  waf-net:
+    external: true
+    name: waf-net
+
+volumes:
+  rabbitmq-data:
+  postgres-data:

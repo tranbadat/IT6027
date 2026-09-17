@@ -1,0 +1,18 @@
+# Rule mẫu Path Traversal. File dạng DANH SÁCH.
+- id: pt-dotdot-slash
+  name: Path traversal dot-dot-slash
+  attack_type: path_traversal
+  severity: high
+  target: any
+  # Bắt: ../ hoặc ..\ (vd ../../../../etc/passwd) trên field đã giải mã
+  pattern: "\\.\\.[\\\\/]"
+  description: Chuỗi ../ hoặc ..\\ để thoát khỏi thư mục gốc
+
+- id: pt-encoded-traversal
+  name: Path traversal percent-encoded
+  attack_type: path_traversal
+  severity: high
+  target: query_string
+  # Bắt: ..%2f ..%5c %2e%2e (dạng %-encode chưa giải mã) vd ..%2f..%2f
+  pattern: "(?i)(\\.\\.%2f|\\.\\.%5c|%2e%2e%2f|%2e%2e/|%2e%2e%5c)"
+  description: Path traversal dạng %-encode trong query string thô

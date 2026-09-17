@@ -1,0 +1,8 @@
+# Công cụ dò quét/recon nhận diện qua User-Agent. File dạng MAPPING (D1 đọc được cả mapping lẫn list).
+id: scanner-tool-ua
+name: Công cụ quét lỗ hổng (User-Agent)
+attack_type: scanner
+severity: medium
+target: user_agent
+pattern: "(?i)(sqlmap|havij|nikto|nmap|masscan|acunetix|nessus|dirbuster|gobuster|wpscan|nuclei|zgrab|fimap|w3af|hydra|zaproxy|arachni)"
+description: User-Agent của công cụ quét (sqlmap/nikto/nmap/nuclei...)

@@ -1,0 +1,301 @@
+{
+  "exchanges": [
+    {
+      "vhost": "/",
+      "name": "waf.events",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "name": "waf.events.dlx",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "vhost": "/",
+      "name": "q.c2-parser",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic",
+        "x-max-length": 50000,
+        "x-overflow": "drop-head"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "q.c3-enrichment",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic",
+        "x-max-length": 50000,
+        "x-overflow": "drop-head"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "q.d1-rule-engine",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic",
+        "x-max-length": 50000,
+        "x-overflow": "drop-head"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "q.d3-anomaly-scorer",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic",
+        "x-max-length": 50000,
+        "x-overflow": "drop-head"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "q.p3-orchestrator",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic",
+        "x-max-length": 50000,
+        "x-overflow": "drop-head"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "q.p4-alerting",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic",
+        "x-max-length": 50000,
+        "x-overflow": "drop-head"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "q.p5-dashboard",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic",
+        "x-max-length": 50000,
+        "x-overflow": "drop-head"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "q.deadletter",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic",
+        "x-max-length": 10000,
+        "x-overflow": "drop-head"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "q.metrics",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic",
+        "x-max-length": 50000,
+        "x-overflow": "drop-head"
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.c2-parser",
+      "routing_key": "log.raw.ingested",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.c3-enrichment",
+      "routing_key": "log.normalized",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.d1-rule-engine",
+      "routing_key": "log.enriched",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.d3-anomaly-scorer",
+      "routing_key": "log.enriched",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.d3-anomaly-scorer",
+      "routing_key": "attack.detected",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p3-orchestrator",
+      "routing_key": "log.#",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p3-orchestrator",
+      "routing_key": "attack.detected",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p3-orchestrator",
+      "routing_key": "anomaly.scored",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p3-orchestrator",
+      "routing_key": "alert.triggered",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p4-alerting",
+      "routing_key": "anomaly.scored",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p4-alerting",
+      "routing_key": "alert.triggered",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p5-dashboard",
+      "routing_key": "log.enriched",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p5-dashboard",
+      "routing_key": "attack.detected",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p5-dashboard",
+      "routing_key": "anomaly.scored",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p5-dashboard",
+      "routing_key": "alert.triggered",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.p5-dashboard",
+      "routing_key": "stage.completed",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events.dlx",
+      "destination_type": "queue",
+      "destination": "q.deadletter",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.metrics",
+      "routing_key": "log.#",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.metrics",
+      "routing_key": "attack.detected",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.metrics",
+      "routing_key": "anomaly.scored",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.metrics",
+      "routing_key": "alert.triggered",
+      "arguments": {}
+    },
+    {
+      "vhost": "/",
+      "source": "waf.events",
+      "destination_type": "queue",
+      "destination": "q.metrics",
+      "routing_key": "stage.completed",
+      "arguments": {}
+    }
+  ]
+}

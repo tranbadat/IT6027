@@ -1,0 +1,5 @@
+extends:
+  - recommended
+rules:
+  # Server trỏ localhost là chủ đích: contract phục vụ môi trường chạy cục bộ.
+  no-server-example.com: off

@@ -1,0 +1,90 @@
+# LOẠI 2 — Pipeline xử lý (Người 1 phần chuẩn hoá + Người 2 phát hiện).
+# C2 chuẩn hoá -> C3 enrichment -> D1 rule engine -> D3 chấm điểm. D2 quản lý rule.
+# Kết nối tới backbone của stack Platform qua network waf-net (EVENT_BUS_URL, SCOPE_SERVICE_URL).
+#
+# Chạy sau khi Platform đã lên:
+#        cp .env.example .env
+#        docker compose up -d
+name: waf-pipeline
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+# Không phụ thuộc DB. Backbone (bus, scope) nằm ở stack Platform -> chỉ cần URL.
+x-svc-env: &svc-env
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  EVENT_BUS_URL: ${EVENT_BUS_URL:?set EVENT_BUS_URL (amqp://user:pass@<hub>:5672/)}
+  EVENT_EXCHANGE: waf.events
+  SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://p1-scope:8000}
+  HTTP_PORT: "8000"
+
+x-svc: &svc
+  restart: unless-stopped
+  logging: *logging
+  networks: [waf-net]
+
+x-worker-healthcheck: &worker-healthcheck
+  test: ["CMD-SHELL", "python -c \"import os,time,sys; sys.exit(0 if time.time()-os.path.getmtime('/tmp/alive')<30 else 1)\""]
+  interval: 10s
+  timeout: 3s
+  retries: 3
+
+services:
+  c2-parser:
+    <<: *svc
+    image: waf/c2-parser:dev
+    environment:
+      <<: *svc-env
+      EVENT_QUEUE: q.c2-parser
+    healthcheck: *worker-healthcheck
+
+  c3-enrichment:
+    <<: *svc
+    image: waf/c3-enrichment:dev
+    environment:
+      <<: *svc-env
+      EVENT_QUEUE: q.c3-enrichment
+      GEOIP_DB_PATH: /data/geoip/dbip-city-lite.mmdb
+    volumes:
+      - ../../data/geoip:/data/geoip:ro
+    healthcheck: *worker-healthcheck
+
+  d1-rule-engine:
+    <<: *svc
+    image: waf/d1-rule-engine:dev
+    environment:
+      <<: *svc-env
+      EVENT_QUEUE: q.d1-rule-engine
+      RULES_DIR: /data/rules
+    volumes:
+      - ../../config/rules:/data/rules:ro
+    healthcheck: *worker-healthcheck
+
+  d2-rule-manager:
+    <<: *svc
+    image: waf/d2-rule-manager:dev
+    environment:
+      <<: *svc-env
+      RULES_DIR: /data/rules
+    volumes:
+      - ../../config/rules:/data/rules
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  d3-anomaly-scorer:
+    <<: *svc
+    image: waf/d3-anomaly-scorer:dev
+    environment:
+      <<: *svc-env
+      EVENT_QUEUE: q.d3-anomaly-scorer
+      ANOMALY_THRESHOLD: ${ANOMALY_THRESHOLD:-70}
+    healthcheck: *worker-healthcheck
+
+networks:
+  waf-net:
+    external: true
+    name: waf-net

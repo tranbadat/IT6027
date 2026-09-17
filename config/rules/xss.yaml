@@ -1,0 +1,34 @@
+# Rule mẫu Cross-Site Scripting (XSS). File dạng DANH SÁCH.
+- id: xss-script-tag
+  name: XSS script tag
+  attack_type: xss
+  severity: high
+  target: any
+  # Bắt: <script>...</script> và <script src=...>
+  pattern: "(?i)<\\s*script[\\s>]"
+  description: Chèn thẻ <script> để chạy mã phía client
+
+- id: xss-event-handler
+  name: XSS inline event handler
+  attack_type: xss
+  severity: medium
+  target: any
+  # Bắt: onerror=, onload=, onclick=, onmouseover=, onfocus=
+  pattern: "(?i)\\bon(error|load|click|mouseover|focus)\\s*="
+  description: Thuộc tính sự kiện inline (vd <img src=x onerror=...>) để chạy JS
+
+- id: xss-js-uri
+  name: "XSS javascript: URI"
+  attack_type: xss
+  severity: medium
+  target: any
+  pattern: "(?i)javascript:\\s*\\w"
+  description: "URI javascript: để chạy mã (vd href=javascript:alert(1))"
+
+- id: xss-html-injection
+  name: XSS chèn thẻ HTML nguy hiểm
+  attack_type: xss
+  severity: medium
+  target: any
+  pattern: "(?i)<\\s*(iframe|svg|img|body|object|embed)\\b"
+  description: Chèn thẻ HTML thường dùng để chạy/nhúng mã

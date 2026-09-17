@@ -1,0 +1,365 @@
+# WAF Log Analyzer — hạ tầng chạy toàn hệ thống trên máy cá nhân.
+# Hướng dẫn: docs/infrastructure.md. Khởi động nhanh: `make up`.
+name: waf-log-analyzer
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Biến môi trường dùng chung cho mọi service ứng dụng (C1–C3, D1–D3, P1–P5).
+x-app-env: &app-env
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  EVENT_BUS_URL: amqp://${RABBITMQ_USER:?set RABBITMQ_USER in .env}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}@rabbitmq:5672/
+  EVENT_EXCHANGE: waf.events
+  DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-waf}
+  SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://mock-api}
+  AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://mock-api}
+  HTTP_PORT: "8000"
+
+x-app: &app
+  restart: unless-stopped
+  logging: *logging
+  networks: [backend]
+  depends_on:
+    rabbitmq:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+
+x-nginx-healthcheck: &nginx-healthcheck
+  test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/healthz"]
+  interval: 10s
+  timeout: 3s
+  retries: 3
+
+services:
+  # ─────────────── Web server mục tiêu (hệ thống bị giám sát) ───────────────
+  # Không thuộc analyzer: chỉ chia sẻ log qua volume, nằm ở network riêng.
+  web-nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [target]
+    ports:
+      - "127.0.0.1:${WEB_NGINX_PORT:-8081}:80"
+    volumes:
+      - ./infra/web-nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./infra/web-nginx/html:/usr/share/nginx/html:ro
+      - nginx-logs:/var/log/waf/nginx
+    healthcheck: *nginx-healthcheck
+
+  web-apache:
+    profiles: [apache]
+    build: ./infra/web-apache
+    image: waf/web-apache:dev
+    restart: unless-stopped
+    logging: *logging
+    networks: [target]
+    ports:
+      - "127.0.0.1:${WEB_APACHE_PORT:-8082}:80"
+    volumes:
+      - apache-logs:/var/log/waf/apache
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ─────────────── Hạ tầng dùng chung ───────────────
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    hostname: rabbitmq # giữ cố định để node name không đổi giữa các lần tạo lại container
+    restart: unless-stopped
+    logging: *logging
+    networks: [backend]
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "127.0.0.1:${RABBITMQ_AMQP_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./infra/rabbitmq:/etc/rabbitmq/waf:ro
+      - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    # Nạp exchange/queue/binding sau mỗi lần container khởi động (idempotent).
+    # Không nạp definitions lúc boot vì khi đó RabbitMQ bỏ qua việc tạo user mặc định từ env.
+    # Hook phải chạy bằng user rabbitmq: chạy bằng root sẽ tạo .erlang.cookie sai chủ sở hữu và node không boot được.
+    post_start:
+      - command: ["sh", "/etc/rabbitmq/waf/load-topology.sh", "--boot"]
+        user: rabbitmq
+    # Chỉ healthy khi node sẵn sàng VÀ topology đã được nạp.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/topology-ready && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [backend]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-waf}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # Cổng vào duy nhất cho API nội bộ: định tuyến + xác thực JWT qua P2 (auth_request).
+  gateway:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [backend]
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:80"
+    environment:
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://mock-api}
+      SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://mock-api}
+      RULES_SERVICE_URL: ${RULES_SERVICE_URL:-http://d2-rule-manager:8000}
+      PIPELINE_SERVICE_URL: ${PIPELINE_SERVICE_URL:-http://p3-orchestrator:8000}
+      ALERTING_SERVICE_URL: ${ALERTING_SERVICE_URL:-http://p4-alerting:8000}
+      DASHBOARD_SERVICE_URL: ${DASHBOARD_SERVICE_URL:-http://p5-dashboard:8000}
+    volumes:
+      - ./infra/gateway/templates:/etc/nginx/templates:ro
+      - ./infra/gateway/snippets:/etc/nginx/snippets:ro
+    healthcheck: *nginx-healthcheck
+
+  # SMTP giả lập cho P4 Alerting; xem email tại http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.27
+    restart: unless-stopped
+    logging: *logging
+    networks: [backend]
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+
+  # ─────────────── Mock (profile: mock) ───────────────
+  # Mock P1 Scope + P2 Auth theo contracts/openapi. Sửa allowlist: infra/mock-api/scope-allowlist.map
+  mock-api:
+    profiles: [mock]
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [backend]
+    ports:
+      - "127.0.0.1:${MOCK_API_PORT:-4010}:80"
+    volumes:
+      - ./infra/mock-api/conf.d:/etc/nginx/conf.d:ro
+      - ./infra/mock-api:/etc/nginx/mock:ro
+    healthcheck: *nginx-healthcheck
+
+  # Nhận webhook cảnh báo từ P4 và in toàn bộ request ra log: `make logs s=webhook-sink`
+  webhook-sink:
+    profiles: [mock]
+    image: mendhak/http-https-echo:37
+    restart: unless-stopped
+    logging: *logging
+    networks: [backend]
+    environment:
+      HTTP_PORT: "8080"
+      HTTPS_PORT: "8443"
+    ports:
+      - "127.0.0.1:${WEBHOOK_SINK_PORT:-4020}:8080"
+
+  # ─────────────── Tài liệu (profile: docs) ───────────────
+  swagger-ui:
+    profiles: [docs]
+    image: swaggerapi/swagger-ui:v5.27.1
+    restart: unless-stopped
+    logging: *logging
+    networks: [backend]
+    environment:
+      URLS: '[{"url":"contracts/scope.yaml","name":"P1 Scope Service"},{"url":"contracts/auth.yaml","name":"P2 Auth"}]'
+    ports:
+      - "127.0.0.1:${SWAGGER_UI_PORT:-8090}:8080"
+    volumes:
+      - ./contracts/openapi:/usr/share/nginx/html/contracts:ro
+
+  # ─────────────── Service ứng dụng ───────────────
+  # Mỗi service build từ services/<tên>/Dockerfile. Chỉ bật profile khi Dockerfile đã tồn tại.
+  # Quy ước (cổng, healthcheck, queue): services/README.md
+
+  # Người 1 — Log Collection
+  c1-ingestion:
+    <<: *app
+    profiles: [c1, collection, app]
+    build:
+      context: ./services
+      dockerfile: c1-ingestion/Dockerfile
+    image: waf/c1-ingestion:dev
+    environment:
+      <<: *app-env
+      LOG_DIR: /var/log/waf
+    volumes:
+      - nginx-logs:/var/log/waf/nginx:ro
+      - apache-logs:/var/log/waf/apache:ro
+
+  c2-parser:
+    <<: *app
+    profiles: [c2, collection, app]
+    build:
+      context: ./services
+      dockerfile: c2-parser/Dockerfile
+    image: waf/c2-parser:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.c2-parser
+
+  c3-enrichment:
+    <<: *app
+    profiles: [c3, collection, app]
+    build:
+      context: ./services
+      dockerfile: c3-enrichment/Dockerfile
+    image: waf/c3-enrichment:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.c3-enrichment
+      GEOIP_DB_PATH: /data/geoip/dbip-city-lite.mmdb
+    volumes:
+      - ./data/geoip:/data/geoip:ro
+
+  # Người 2 — Detection Engine
+  d1-rule-engine:
+    <<: *app
+    profiles: [d1, detection, app]
+    build:
+      context: ./services
+      dockerfile: d1-rule-engine/Dockerfile
+    image: waf/d1-rule-engine:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.d1-rule-engine
+      RULES_DIR: /data/rules
+    volumes:
+      - ./config/rules:/data/rules:ro
+
+  d2-rule-manager:
+    <<: *app
+    profiles: [d2, detection, app]
+    build:
+      context: ./services
+      dockerfile: d2-rule-manager/Dockerfile
+    image: waf/d2-rule-manager:dev
+    environment:
+      <<: *app-env
+      RULES_DIR: /data/rules
+    volumes:
+      - ./config/rules:/data/rules
+
+  d3-anomaly-scorer:
+    <<: *app
+    profiles: [d3, detection, app]
+    build:
+      context: ./services
+      dockerfile: d3-anomaly-scorer/Dockerfile
+    image: waf/d3-anomaly-scorer:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.d3-anomaly-scorer
+
+  # Người 3 — Platform
+  p1-scope:
+    <<: *app
+    profiles: [p1, platform, app]
+    build:
+      context: ./services
+      dockerfile: p1-scope/Dockerfile
+    image: waf/p1-scope:dev
+    environment:
+      <<: *app-env
+      SCOPE_ALLOWLIST: ${SCOPE_ALLOWLIST:-shop.local,blog.local,shop-app}
+
+  p2-auth:
+    <<: *app
+    profiles: [p2, platform, app]
+    build:
+      context: ./services
+      dockerfile: p2-auth/Dockerfile
+    image: waf/p2-auth:dev
+    environment:
+      <<: *app-env
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+
+  p3-orchestrator:
+    <<: *app
+    profiles: [p3, platform, app]
+    build:
+      context: ./services
+      dockerfile: p3-orchestrator/Dockerfile
+    image: waf/p3-orchestrator:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.p3-orchestrator
+      PIPELINES_DIR: /config/pipelines
+    volumes:
+      - ./config/pipelines:/config/pipelines:ro
+
+  p4-alerting:
+    <<: *app
+    profiles: [p4, platform, app]
+    build:
+      context: ./services
+      dockerfile: p4-alerting/Dockerfile
+    image: waf/p4-alerting:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.p4-alerting
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      ALERT_EMAIL_FROM: waf-alerts@waf.local
+      ALERT_EMAIL_TO: soc@waf.local
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://webhook-sink:8080/alerts}
+
+  p5-dashboard:
+    <<: *app
+    profiles: [p5, platform, app]
+    build:
+      context: ./services
+      dockerfile: p5-dashboard/Dockerfile
+    image: waf/p5-dashboard:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.p5-dashboard
+
+  # Quan sát: tổng hợp metric từ event bus cho Prometheus (profile obs).
+  metrics-exporter:
+    <<: *app
+    profiles: [obs]
+    build:
+      context: ./services
+      dockerfile: metrics-exporter/Dockerfile
+    image: waf/metrics-exporter:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.metrics
+    ports:
+      - "127.0.0.1:${METRICS_PORT:-9101}:8000"
+
+networks:
+  backend:
+  target:
+
+volumes:
+  nginx-logs:
+  apache-logs:
+  rabbitmq-data:
+  postgres-data:

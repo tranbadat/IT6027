@@ -1,0 +1,17 @@
+# Lỗ hổng thành phần & template injection (OWASP A06, A03). File dạng DANH SÁCH.
+- id: log4shell-jndi
+  name: Log4Shell JNDI lookup
+  attack_type: log4shell
+  severity: critical
+  target: any
+  pattern: "(?i)\\$\\{jndi:(ldaps?|rmi|dns|iiop|corba|nis):"
+  description: Chuỗi ${jndi:...} khai thác Log4j (CVE-2021-44228)
+
+- id: ssti-expression
+  name: SSTI - biểu thức template
+  attack_type: ssti
+  severity: high
+  target: any
+  # {{...}} có độ dài giới hạn -> an toàn, không backtracking
+  pattern: "\\{\\{[^}]{1,100}\\}\\}"
+  description: Cú pháp {{...}} của server-side template injection (vd {{7*7}})

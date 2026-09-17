@@ -1,0 +1,17 @@
+# Command Injection (OWASP A03: Injection). File dạng DANH SÁCH.
+- id: ci-shell-metachar-cmd
+  name: Command injection - ký tự phân tách + lệnh
+  attack_type: command_injection
+  severity: critical
+  target: any
+  # Ký tự nối lệnh (; | && $() `, cả bản %-encode) đứng trước một lệnh hệ thống
+  pattern: "(?i)(;|\\||%3b|%7c|\\$\\(|&&|`)\\s*(cat|ls|id|whoami|uname|wget|curl|nc|bash|sh|ping|rm|chmod|nslookup|dig)\\b"
+  description: Chèn lệnh shell qua tham số (vd ;cat /etc/passwd)
+
+- id: ci-sensitive-cmd
+  name: Command injection - chuỗi thực thi điển hình
+  attack_type: command_injection
+  severity: high
+  target: any
+  pattern: "(?i)(cat\\s+/etc/passwd|/bin/(ba)?sh\\b|nc\\s+-e|bash\\s+-i|python\\s+-c\\b)"
+  description: Payload reverse shell / đọc file điển hình

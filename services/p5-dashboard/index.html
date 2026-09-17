@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WAF Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1420; --panel: #171d2b; --panel2: #1e2637; --line: #2a3346;
+      --fg: #e6ebf5; --muted: #93a0b8; --accent: #4da3ff;
+      --sev-high: #ff5c5c; --sev-medium: #ffb020; --sev-low: #46c977; --bar: #3d6fb5;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg);
+      font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+    .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px;
+      background: var(--panel2); color: var(--muted); border: 1px solid var(--line); }
+    .pill.ok { color: var(--sev-low); border-color: #24503a; }
+    .pill.err { color: var(--sev-high); border-color: #522a2a; }
+    main { padding: 16px 20px; display: grid; gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+      padding: 14px 16px; min-width: 0; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+    .span-2 { grid-column: 1 / -1; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line);
+      font-variant-numeric: tabular-nums; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    td.num, th.num { text-align: right; }
+    .empty { color: var(--muted); font-style: italic; padding: 8px; }
+    .bars { display: flex; align-items: flex-end; gap: 2px; height: 44px; margin-top: 6px; }
+    .bars > span { flex: 1 1 0; background: var(--bar); border-radius: 2px 2px 0 0; min-height: 2px; }
+    .traffic-row { padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .traffic-row:last-child { border-bottom: 0; }
+    .traffic-head { display: flex; justify-content: space-between; font-size: 13px; }
+    .traffic-head b { font-weight: 600; }
+    .sev { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); }
+    .sev.high { color: var(--sev-high); } .sev.medium { color: var(--sev-medium); }
+    .sev.low { color: var(--sev-low); }
+    .feed { max-height: 340px; overflow-y: auto; }
+    .feed-item { padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+    .feed-item:last-child { border-bottom: 0; }
+    .feed-item .ev { color: var(--accent); font-weight: 600; }
+    .feed-item .meta { color: var(--muted); font-size: 12px; }
+    code { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WAF Log Analyzer — Realtime Dashboard</h1>
+    <span id="auth-status" class="pill">auth: …</span>
+    <span id="stream-status" class="pill">stream: …</span>
+    <span id="updated" class="pill"></span>
+  </header>
+
+  <main>
+    <section class="panel span-2">
+      <h2>Lưu lượng theo domain (theo phút)</h2>
+      <div id="traffic"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Loại tấn công nhiều nhất</h2>
+      <table><thead><tr><th>Loại</th><th class="num">Số lần</th></tr></thead>
+        <tbody id="top-attacks"></tbody></table>
+    </section>
+
+    <section class="panel">
+      <h2>IP nguồn tấn công nhiều nhất</h2>
+      <table><thead><tr><th>IP</th><th class="num">Số lần</th></tr></thead>
+        <tbody id="top-ips"></tbody></table>
+    </section>
+
+    <section class="panel span-2">
+      <h2>Lịch sử cảnh báo</h2>
+      <table><thead><tr><th>Thời điểm</th><th>Domain</th><th>Mức độ</th>
+        <th>Loại tấn công</th><th>IP nguồn</th><th>Lý do</th></tr></thead>
+        <tbody id="alerts"></tbody></table>
+    </section>
+
+    <section class="panel span-2">
+      <h2>Feed realtime</h2>
+      <div id="feed" class="feed"></div>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+    const POLL_MS = 5000;      // poll summary định kỳ (bổ sung cho SSE)
+    const MAX_FEED = 100;      // số dòng feed giữ trên UI
+    const feedEl = document.getElementById("feed");
+
+    function setPill(id, text, cls) {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.className = "pill" + (cls ? " " + cls : "");
+    }
+    function esc(v) {
+      return String(v == null ? "" : v)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+    function sevClass(s) {
+      s = String(s || "").toLowerCase();
+      return s === "high" || s === "critical" ? "high" : s === "medium" ? "medium" : "low";
+    }
+
+    // Bước 1: lấy token + đặt cookie waf_token (P5 tự xử lý đăng nhập phía client).
+    async function getToken() {
+      try {
+        const res = await fetch("/api/auth/token", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: '{"client_id":"dashboard","client_secret":"dashboard"}',
+          credentials: "include",
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        setPill("auth-status", "auth: ok", "ok");
+        return true;
+      } catch (e) {
+        setPill("auth-status", "auth: lỗi (" + e.message + ")", "err");
+        return false;
+      }
+    }
+
+    // Bước 2: nạp tổng hợp (cookie JWT gửi kèm qua credentials:include).
+    async function loadSummary() {
+      try {
+        const res = await fetch("/api/dashboard/summary", { credentials: "include" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        render(await res.json());
+        setPill("updated", "cập nhật: " + new Date().toLocaleTimeString());
+      } catch (e) {
+        setPill("updated", "summary lỗi: " + e.message, "err");
+      }
+    }
+
+    // Bước 3: mở SSE realtime (EventSource dùng cookie qua withCredentials).
+    function connectStream() {
+      let src;
+      try {
+        src = new EventSource("/api/dashboard/stream", { withCredentials: true });
+      } catch (e) {
+        setPill("stream-status", "stream: không mở được", "err");
+        return;
+      }
+      src.onopen = () => setPill("stream-status", "stream: live", "ok");
+      src.onerror = () => setPill("stream-status", "stream: mất kết nối (tự thử lại)", "err");
+      const onEvent = (ev) => {
+        try { pushFeed(JSON.parse(ev.data)); } catch (_) {}
+      };
+      ["attack.detected", "anomaly.scored", "alert.triggered", "log.enriched"]
+        .forEach((name) => src.addEventListener(name, onEvent));
+      src.onmessage = onEvent; // fallback nếu không có trường event
+    }
+
+    function pushFeed(item) {
+      const div = document.createElement("div");
+      div.className = "feed-item";
+      const d = item.data || {};
+      const detail = d.attack_type || (d.attack_types || []).join(", ")
+        || d.path || d.url || "";
+      div.innerHTML = '<span class="ev">' + esc(item.event) + '</span> '
+        + '<span class="meta">' + esc(item.domain || "") + " · "
+        + esc((item.timestamp || "").slice(11, 19)) + "</span>"
+        + (detail ? "<div>" + esc(detail) + (d.src_ip ? " ← " + esc(d.src_ip) : "") + "</div>" : "");
+      feedEl.prepend(div);
+      while (feedEl.childElementCount > MAX_FEED) feedEl.removeChild(feedEl.lastChild);
+    }
+
+    function render(s) {
+      renderTraffic(s.traffic || []);
+      renderCounts("top-attacks", (s.top_attacks || []).map(r => [r.attack_type, r.count]));
+      renderCounts("top-ips", (s.top_ips || []).map(r => [r.ip, r.count]));
+      renderAlerts(s.alerts || []);
+      // Lấp feed bằng sự kiện gần nhất khi mới tải (feed còn trống) để không trắng
+      // trang trong lúc chờ sự kiện SSE tiếp theo. SSE sẽ nối tiếp phía trên.
+      if (feedEl.childElementCount === 0 && Array.isArray(s.recent)) {
+        s.recent.slice(-MAX_FEED).forEach(pushFeed);
+      }
+    }
+
+    function renderTraffic(rows) {
+      const byDomain = {};
+      rows.forEach((r) => { (byDomain[r.domain] = byDomain[r.domain] || []).push(r); });
+      const domains = Object.keys(byDomain).sort();
+      const host = document.getElementById("traffic");
+      if (!domains.length) { host.innerHTML = '<div class="empty">Chưa có lưu lượng.</div>'; return; }
+      host.innerHTML = domains.map((domain) => {
+        const series = byDomain[domain].sort((a, b) => a.minute < b.minute ? -1 : 1);
+        const total = series.reduce((sum, r) => sum + r.count, 0);
+        const max = Math.max.apply(null, series.map(r => r.count));
+        const bars = series.slice(-60).map((r) =>
+          '<span title="' + esc(r.minute) + ": " + r.count + '" style="height:'
+          + Math.max(4, Math.round((r.count / max) * 100)) + '%"></span>').join("");
+        return '<div class="traffic-row"><div class="traffic-head"><b>' + esc(domain)
+          + "</b><span>" + total + " req · " + series.length + " phút</span></div>"
+          + '<div class="bars">' + bars + "</div></div>";
+      }).join("");
+    }
+
+    function renderCounts(id, pairs) {
+      const body = document.getElementById(id);
+      if (!pairs.length) { body.innerHTML = '<tr><td colspan="2" class="empty">Chưa có.</td></tr>'; return; }
+      body.innerHTML = pairs.map(([k, v]) =>
+        "<tr><td>" + esc(k) + '</td><td class="num">' + esc(v) + "</td></tr>").join("");
+    }
+
+    function renderAlerts(alerts) {
+      const body = document.getElementById("alerts");
+      if (!alerts.length) { body.innerHTML = '<tr><td colspan="6" class="empty">Chưa có cảnh báo.</td></tr>'; return; }
+      body.innerHTML = alerts.map((a) =>
+        "<tr><td>" + esc((a.triggered_at || "").slice(11, 19)) + "</td>"
+        + "<td>" + esc(a.domain) + "</td>"
+        + '<td><span class="sev ' + sevClass(a.severity) + '">' + esc(a.severity || "?") + "</span></td>"
+        + "<td>" + esc((a.attack_types || []).join(", ")) + "</td>"
+        + "<td>" + esc(a.src_ip || "") + "</td>"
+        + "<td>" + esc(a.reason || "") + "</td></tr>").join("");
+    }
+
+    (async function init() {
+      await getToken();
+      await loadSummary();
+      connectStream();
+      setInterval(loadSummary, POLL_MS);
+    })();
+  </script>
+</body>
+</html>

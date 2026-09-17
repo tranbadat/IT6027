@@ -1,0 +1,40 @@
+# LFI / RFI / Truy cập file nhạy cảm (OWASP A01, A03, A05). File dạng DANH SÁCH.
+- id: lfi-system-files
+  name: LFI - đọc file hệ thống
+  attack_type: lfi
+  severity: high
+  target: any
+  pattern: "(?i)(/etc/(passwd|shadow|hosts)|/proc/self/environ|boot\\.ini|win\\.ini)"
+  description: Truy cập file hệ thống nhạy cảm
+
+- id: lfi-php-wrappers
+  name: LFI - PHP/stream wrapper
+  attack_type: lfi
+  severity: high
+  target: any
+  pattern: "(?i)(php://(filter|input)|file://|expect://|data://text|zip://)"
+  description: Dùng wrapper (php://filter, file://...) để đọc/chèn nội dung
+
+- id: rfi-remote-include
+  name: RFI - chèn file từ xa
+  attack_type: rfi
+  severity: high
+  target: query_string
+  pattern: "(?i)(include|require|page|file|url|path|src|template|load|doc)=(https?%3a%2f%2f|https?://)"
+  description: Tham số kiểu include trỏ tới URL từ xa
+
+- id: sf-dotfiles
+  name: Truy cập dotfile/thư mục quản trị
+  attack_type: sensitive_file
+  severity: medium
+  target: path_decoded
+  pattern: "(?i)/\\.(env|git|svn|htaccess|htpasswd|aws|ssh)\\b"
+  description: Dò .env/.git/.htaccess/.ssh...
+
+- id: sf-backup-config
+  name: Dò file backup/cấu hình bị lộ
+  attack_type: sensitive_file
+  severity: medium
+  target: path_decoded
+  pattern: "(?i)(wp-config\\.php|/phpinfo\\.php|\\.(bak|old|sql|swp)(\\?|$))"
+  description: Dò file backup/cấu hình (wp-config.php, *.bak, *.sql...)
