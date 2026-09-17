@@ -78,6 +78,45 @@ def test_signals_shape():
         assert key in result.signals
 
 
+def test_behavioral_error_scan_triggers_without_rule():
+    # Quét gây nhiều lỗi, KHÔNG có rule nào khớp -> vẫn phát hiện độc lập.
+    s = scorer_mod.Scorer(error_burst=5, error_rate_min=0.5, flood_rate=1000)
+    for i in range(6):
+        s.record_request(DOMAIN, IP, 404, now=1000.0 + i)
+    result = s.evaluate_behavioral(DOMAIN, IP, now=1006.0, threshold=70)
+    assert result is not None
+    assert result.attack_types[0] == "error_scan"
+    assert result.score >= 70
+    assert result.signals["rule_hits"] == 0  # không cần rule
+
+
+def test_behavioral_flood_triggers():
+    s = scorer_mod.Scorer(flood_rate=10, error_burst=1000)
+    for i in range(12):
+        s.record_request(DOMAIN, IP, 200, now=1000.0 + i * 0.1)
+    result = s.evaluate_behavioral(DOMAIN, IP, now=1002.0, threshold=70)
+    assert result is not None
+    assert result.attack_types[0] == "traffic_flood"
+    assert result.score >= 70
+
+
+def test_static_asset_404_not_counted_as_error():
+    s = scorer_mod.Scorer(error_burst=5, error_rate_min=0.5, flood_rate=1000)
+    for i in range(8):
+        s.record_request(DOMAIN, IP, 404, now=1000.0 + i, path="/favicon.ico")
+    # 404 của favicon KHÔNG tính là lỗi quét -> không kích hoạt error_scan.
+    assert s.evaluate_behavioral(DOMAIN, IP, now=1008.0, threshold=70) is None
+    r = s.evaluate(DOMAIN, IP, now=1008.0)
+    assert r.signals["error_count"] == 0
+
+
+def test_behavioral_none_on_normal_traffic():
+    s = scorer_mod.Scorer(flood_rate=100, error_burst=20)
+    for i in range(5):
+        s.record_request(DOMAIN, IP, 200, now=1000.0 + i)
+    assert s.evaluate_behavioral(DOMAIN, IP, now=1005.0, threshold=70) is None
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

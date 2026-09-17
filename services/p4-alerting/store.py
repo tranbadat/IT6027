@@ -17,6 +17,7 @@ _COUNTER_NAMES = (
     "emails_failed",
     "webhooks_sent",
     "webhooks_failed",
+    "db_errors",           # lỗi khi lưu lịch sử vào DB (nếu bật)
 )
 
 

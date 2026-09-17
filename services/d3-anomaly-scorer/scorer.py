@@ -4,7 +4,11 @@ Giữ thống kê theo (domain, src_ip) trong cửa sổ WINDOW_SECONDS:
 rule_hits (trọng số theo severity), request_count, error_count, tập attack_types.
 GIỚI HẠN bộ nhớ bằng cách cap số IP theo dõi (LRU). KHÔNG chặn IP, chỉ chấm điểm.
 """
+import re
 from collections import OrderedDict, deque
+
+# Static asset lành tính: 404 của chúng KHÔNG tính là "lỗi quét" (tránh false positive).
+_STATIC_RE = re.compile(r"\.(?:ico|css|js|mjs|png|jpe?g|gif|svg|webp|woff2?|ttf|eot|map|txt)$", re.I)
 
 # Trọng số theo mức độ rule.
 SEVERITY_WEIGHTS = {"low": 5, "medium": 15, "high": 30, "critical": 50}
@@ -21,6 +25,13 @@ FREQ_CAP = 20.0
 ERROR_PER_ERROR = 2.0
 ERROR_CAP = 20.0
 SCORE_MAX = 100
+
+# Phát hiện hành vi ĐỘC LẬP (không cần rule khớp) từ log.enriched:
+#   - flood: req/phút từ một IP vượt ngưỡng;
+#   - error_scan: số lỗi trong cửa sổ vượt ngưỡng KÈM tỉ lệ lỗi cao (tránh false positive).
+FLOOD_RATE_1M = 100
+ERROR_BURST = 20
+ERROR_RATE_MIN = 0.5
 
 _ERROR_STATUS_MIN = 400
 
@@ -70,10 +81,14 @@ class Score:
 
 class Scorer:
     def __init__(self, window=WINDOW_SECONDS, max_keys=MAX_TRACKED_KEYS,
-                 cooldown=COOLDOWN_SECONDS):
+                 cooldown=COOLDOWN_SECONDS, flood_rate=FLOOD_RATE_1M,
+                 error_burst=ERROR_BURST, error_rate_min=ERROR_RATE_MIN):
         self._window = window
         self._max_keys = max_keys
         self._cooldown = cooldown
+        self._flood_rate = flood_rate
+        self._error_burst = error_burst
+        self._error_rate_min = error_rate_min
         self._stats = OrderedDict()   # (domain, src_ip) -> _Window
         self._last_alert = OrderedDict()  # src_ip -> ts
 
@@ -89,12 +104,17 @@ class Scorer:
             self._stats.move_to_end(key)
         return window
 
-    def record_request(self, domain, src_ip, status, now):
-        """Ghi nhận một request từ log.enriched."""
+    def record_request(self, domain, src_ip, status, now, path=""):
+        """Ghi nhận một request từ log.enriched.
+
+        404/403 của static asset lành tính (favicon.ico, .css/.js/.png…) KHÔNG tính là lỗi
+        quét, để không kích hoạt error_scan sai.
+        """
         window = self._touch((domain, src_ip))
         window.prune(now - self._window)
         window.requests.append(now)
-        if isinstance(status, int) and status >= _ERROR_STATUS_MIN:
+        is_static = bool(path) and _STATIC_RE.search(path) is not None
+        if isinstance(status, int) and status >= _ERROR_STATUS_MIN and not is_static:
             window.errors.append(now)
 
     def record_attack(self, domain, src_ip, severity, attack_type, rule_id, now):
@@ -133,6 +153,41 @@ class Scorer:
         }
         return Score(score, severity_from_score(score), signals,
                      attack_types, rule_ids)
+
+    def evaluate_behavioral(self, domain, src_ip, now, threshold):
+        """Chấm điểm hành vi ĐỘC LẬP (không cần rule khớp) cho (domain, src_ip).
+
+        Trả Score nếu chạm ngưỡng flood/error_scan (score >= threshold), ngược lại None.
+        Cho phép phát hiện quét/flood mà bước rule không bắt được.
+        """
+        window = self._stats.get((domain, src_ip))
+        if window is None:
+            return None
+        window.prune(now - self._window)
+
+        req_count = len(window.requests)
+        error_count = len(window.errors)
+        error_rate = round(error_count / req_count, 4) if req_count else 0.0
+        rate_cutoff = now - RATE_WINDOW_SECONDS
+        req_rate_1m = sum(1 for ts in window.requests if ts >= rate_cutoff)
+
+        flood_ratio = req_rate_1m / self._flood_rate if self._flood_rate else 0.0
+        error_ratio = (error_count / self._error_burst
+                       if self._error_burst and error_rate >= self._error_rate_min else 0.0)
+        ratio = max(flood_ratio, error_ratio)
+        if ratio < 1.0:
+            return None  # chưa đủ bất thường về hành vi
+
+        attack_type = "traffic_flood" if flood_ratio >= error_ratio else "error_scan"
+        score = int(min(SCORE_MAX, round(threshold * ratio)))
+        signals = {
+            "rule_hits": len(window.hits),
+            "req_count": req_count,
+            "error_count": error_count,
+            "error_rate": error_rate,
+            "req_rate_1m": req_rate_1m,
+        }
+        return Score(score, severity_from_score(score), signals, (attack_type,), ())
 
     def should_alert(self, src_ip, now):
         """True nếu qua cooldown theo src_ip (chưa đánh dấu là đã cảnh báo)."""

@@ -202,7 +202,23 @@ Khi P1 hoặc P2 bản thật đã sẵn sàng:
 
 ## Database
 
-PostgreSQL tạo sẵn các schema `scope`, `auth`, `pipeline`, `alerting`, `dashboard`, `rules`, `detection` (xem `infra/postgres/init/01-schemas.sql`). Mỗi module tự tạo bảng và tự quản lý migration trong schema của mình.
+PostgreSQL tạo sẵn 7 schema theo module (xem `infra/postgres/init/01-schemas.sql`); mỗi service tự tạo bảng trong schema của mình khi khởi động.
+
+**Đang dùng (dữ liệu bền, sống sót restart):**
+
+| Schema | Bảng | Service | Nội dung |
+|---|---|---|---|
+| `scope` | `allowlist` | P1 | Domain/ứng dụng được phép xử lý |
+| `alerting` | `alerts` | P4 | **Lịch sử cảnh báo** (domain, loại, IP, điểm, lý do, thời điểm) |
+| `detection` | `attacks` | P5 | **Lịch sử tấn công phát hiện** (rule, loại, URL, payload khớp, IP) |
+
+Đọc lại lịch sử qua API (đều sống sót restart):
+- `GET /api/alerts?limit=&domain=` → lịch sử cảnh báo (P4), kèm `persisted: true`.
+- `GET /api/dashboard/attacks?limit=&domain=&attack_type=` → lịch sử tấn công (P5).
+
+**Chưa dùng (dự phòng theo thiết kế schema-per-module):** `auth` (P2 stateless bằng JWT), `pipeline` (P3 đếm trong bộ nhớ), `rules` (D2 lưu file YAML), `dashboard` (P5 tổng hợp realtime trong bộ nhớ; số liệu lịch sử đã có ở Prometheus). Để trống sẵn cho mở rộng sau, không ảnh hưởng vận hành.
+
+Kho lịch sử là **tuỳ chọn**: nếu không có `DATABASE_URL` hoặc DB tạm lỗi, P4/P5 tự lùi về bộ nhớ (API trả `persisted: false`), pipeline vẫn chạy.
 
 Script init chỉ chạy khi volume còn trống. Muốn chạy lại thì dùng `make clean`, lệnh này **xoá toàn bộ dữ liệu**.
 

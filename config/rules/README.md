@@ -42,9 +42,13 @@ File có thể là **danh sách** nhiều rule hoặc **một mapping** (một r
 > Các mục OWASP cần trạng thái phiên/thân request (CSRF, auth, deserialization…) không suy được từ
 > access log nên không đưa vào rule tĩnh — D3 bù bằng chấm điểm bất thường theo thống kê.
 
-## Thêm/sửa rule lúc đang chạy (2 cách)
+## Thêm/sửa rule lúc đang chạy (3 cách)
 
-**Cách 1 — API D2 (khuyến nghị, có validate + chặn ReDoS):**
+**Cách 1 — Giao diện quản trị (dễ nhất):** mở **http://localhost:8080/rules**
+(có link "⚙ Quản trị Rule" ở dashboard). Xem danh sách, thêm/sửa/xoá rule, nút "Chỉ kiểm tra"
+để validate trước. Trang gọi API D2 bên dưới; D1 nạp lại trong ~5s.
+
+**Cách 2 — API D2 (cho tự động hoá, có validate + chặn ReDoS):**
 ```bash
 TOKEN=$(curl -s -X POST localhost:8080/api/auth/token \
   -H 'content-type: application/json' -d '{"client_id":"soc","client_secret":"soc"}' | jq -r .access_token)
@@ -58,7 +62,7 @@ curl -s -X DELETE localhost:8080/api/rules/custom-admin-probe -H "Authorization:
 ```
 D2 từ chối rule sai schema hoặc regex nguy hiểm (nested quantifier, quá dài, hoặc match quá lâu).
 
-**Cách 2 — thêm file YAML** vào thư mục này rồi lưu; D1 phát hiện thay đổi và nạp lại.
+**Cách 3 — thêm file YAML** vào thư mục này rồi lưu; D1 phát hiện thay đổi và nạp lại.
 
 ## An toàn regex
 

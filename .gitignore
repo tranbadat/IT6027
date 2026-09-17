@@ -1,3 +1,6 @@
 .env
 data/
 .DS_Store
+
+# Bản export design (canvas) — chỉ để tham khảo, không commit
+docs/design/*.html

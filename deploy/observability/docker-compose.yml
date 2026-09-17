@@ -44,6 +44,30 @@ services:
     ports:
       - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
 
+  # Loki: lưu trữ log tập trung.
+  loki:
+    image: grafana/loki:3.3.2
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ../../infra/observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+
+  # Promtail: gom log stdout của mọi container (qua Docker socket) -> Loki.
+  promtail:
+    image: grafana/promtail:3.3.2
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf-net]
+    command: ["-config.file=/etc/promtail/promtail-config.yml"]
+    volumes:
+      - ../../infra/observability/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+
   grafana:
     image: grafana/grafana:11.4.0
     restart: unless-stopped
@@ -55,6 +79,10 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"      # xem dashboard không cần đăng nhập (demo)
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Cấp cho datasource Postgres (đọc lịch sử cảnh báo/tấn công trực tiếp).
+      GRAFANA_DB_USER: ${GRAFANA_DB_USER:-grafana_ro}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set GRAFANA_DB_PASSWORD (khớp Platform)}
+      POSTGRES_DB: ${POSTGRES_DB:-waf}
     volumes:
       - ../../infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ../../infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -63,6 +91,7 @@ services:
       - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     depends_on:
       - prometheus
+      - loki
 
 networks:
   waf-net:
@@ -72,3 +101,4 @@ networks:
 volumes:
   prometheus-data:
   grafana-data:
+  loki-data:

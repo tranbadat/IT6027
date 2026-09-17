@@ -10,10 +10,11 @@ import asyncio
 import json
 import os
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 _INDEX_PATH = os.path.join(os.path.dirname(__file__), "index.html")
+_RULES_PATH = os.path.join(os.path.dirname(__file__), "rules.html")
 # Khoảng thời gian gửi comment keep-alive khi không có event (giữ kết nối SSE sống).
 _KEEPALIVE_SECONDS = 15
 
@@ -46,9 +47,15 @@ async def _event_stream(request: Request, hub):
         hub.unsubscribe(queue)
 
 
-def create_app(store, hub) -> FastAPI:
+def _load_html(path: str) -> str:
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def create_app(store, hub, repo=None) -> FastAPI:
     app = FastAPI(title="P5 Dashboard Service", version="0.1.0")
     index_html = _load_index_html()
+    rules_html = _load_html(_RULES_PATH)
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -58,9 +65,27 @@ def create_app(store, hub) -> FastAPI:
     def index() -> HTMLResponse:
         return HTMLResponse(content=index_html)
 
+    # Trang quản trị rule (gateway map "/" -> P5; gọi API D2 qua /api/rules/*).
+    @app.get("/rules", response_class=HTMLResponse)
+    def rules_admin() -> HTMLResponse:
+        return HTMLResponse(content=rules_html)
+
     @app.get("/dashboard/summary")
     def summary() -> dict:
         return store.summary()
+
+    # Lịch sử tấn công BỀN từ DB (sống sót restart). Gateway: /api/dashboard/attacks (JWT).
+    @app.get("/dashboard/attacks")
+    def attacks(limit: int = Query(default=100, ge=1, le=1000),
+                domain: str | None = Query(default=None),
+                attack_type: str | None = Query(default=None)) -> dict:
+        if repo is None:
+            return {"attacks": [], "persisted": False}
+        try:
+            return {"attacks": repo.recent(limit, domain, attack_type),
+                    "count": repo.count(), "persisted": True}
+        except Exception:
+            return {"attacks": [], "persisted": False}
 
     @app.get("/dashboard/stream")
     async def stream(request: Request) -> StreamingResponse:

@@ -1,0 +1,49 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "id": null,
+  "uid": "waf-logs",
+  "title": "WAF Log Analyzer — Logs tập trung",
+  "tags": ["waf", "logs"],
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "10s",
+  "templating": {
+    "list": [
+      {
+        "name": "service", "type": "query", "label": "Service",
+        "datasource": { "type": "loki", "uid": "loki" },
+        "query": { "label": "service", "stream": "", "type": 1 },
+        "refresh": 2, "includeAll": true, "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Số dòng log / phút theo service",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15 } }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "loki", "uid": "loki" },
+        "expr": "sum by (service) (count_over_time({service=~\"$service\"}[1m]))", "legendFormat": "{{service}}" }]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Log lỗi / phút theo service",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60 }, "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "loki", "uid": "loki" },
+        "expr": "sum by (service) (count_over_time({service=~\"$service\"} |~ `(?i)error|fail|exception` [1m]))", "legendFormat": "{{service}}" }]
+    },
+    {
+      "id": 3, "type": "logs", "title": "Log trực tiếp (tất cả service)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 18, "w": 24, "x": 0, "y": 7 },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true },
+      "targets": [{ "refId": "A", "datasource": { "type": "loki", "uid": "loki" },
+        "expr": "{service=~\"$service\"}" }]
+    }
+  ]
+}
