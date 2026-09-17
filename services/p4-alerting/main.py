@@ -7,11 +7,13 @@ dedup/cooldown. Trên anomaly.scored: chỉ ghi nhận. KHÔNG tự chặn IP / 
 import uvicorn
 
 from common import config
+from common import db as db_mod
 from common import logging as log
 
 import app as app_mod
 import consumer as consumer_mod
 import notify as notify_mod
+import repo as repo_mod
 import store as store_mod
 import thresholds as thresholds_mod
 from cooldown import CooldownStore
@@ -29,6 +31,20 @@ def _load_smtp_config() -> notify_mod.SmtpConfig:
     )
 
 
+def _init_repo():
+    """Mở kho lưu lịch sử cảnh báo (Postgres) nếu có DATABASE_URL. Lỗi -> degrade in-memory."""
+    dsn = config.env("DATABASE_URL", "")
+    if not dsn:
+        return None
+    try:
+        repo = repo_mod.AlertRepo(db_mod.pool(dsn))
+        repo.ensure_schema()
+        return repo
+    except Exception as exc:
+        log.error("cannot init alert repo, dùng in-memory", error=str(exc))
+        return None
+
+
 def main() -> None:
     log.set_service(SOURCE)
 
@@ -41,13 +57,14 @@ def main() -> None:
     store = store_mod.AlertStore()
     cooldown = CooldownStore(cooldown_seconds)
     smtp_cfg = _load_smtp_config()
+    repo = _init_repo()
 
-    handler = consumer_mod.build_handler(store, cooldown, thresholds, smtp_cfg, webhook_url)
+    handler = consumer_mod.build_handler(store, cooldown, thresholds, smtp_cfg, webhook_url, repo)
     consumer_mod.start_consumer_thread(bus_url, queue, handler)
 
     log.info("p4-alerting http starting", queue=queue, cooldown_seconds=cooldown_seconds,
-             thresholds=len(thresholds), webhook=bool(webhook_url))
-    app = app_mod.create_app(store)
+             thresholds=len(thresholds), webhook=bool(webhook_url), persist=bool(repo))
+    app = app_mod.create_app(store, repo)
     uvicorn.run(app, host="0.0.0.0", port=config.env_int("HTTP_PORT", 8000), access_log=False)
 
 

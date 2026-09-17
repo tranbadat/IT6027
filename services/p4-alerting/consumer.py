@@ -34,7 +34,18 @@ def _deliver(alert: dict, smtp_cfg, webhook_url, store) -> None:
         log.warning("webhook post failed", error=str(exc), url=webhook_url)
 
 
-def _on_alert(env, store, cooldown, smtp_cfg, webhook_url) -> None:
+def _persist(alert, repo, store) -> None:
+    """Lưu lịch sử cảnh báo vào DB (best-effort, không làm chết handler)."""
+    if repo is None:
+        return
+    try:
+        repo.insert(alert)
+    except Exception as exc:
+        store.incr("db_errors")
+        log.warning("persist alert failed", error=str(exc), event_id=alert.get("event_id"))
+
+
+def _on_alert(env, store, cooldown, smtp_cfg, webhook_url, repo) -> None:
     alert = alerts_mod.build_alert(env)
     key = alerts_mod.dedup_key(alert)
     if not cooldown.allow(key):
@@ -43,6 +54,7 @@ def _on_alert(env, store, cooldown, smtp_cfg, webhook_url) -> None:
                  src_ip=alert["src_ip"], attack_type=alert["main_attack_type"])
         return
     store.add_alert(alert)
+    _persist(alert, repo, store)
     log.info("alert triggered", domain=alert["domain"], severity=alert["severity"],
              attack_type=alert["main_attack_type"], src_ip=alert["src_ip"])
     _deliver(alert, smtp_cfg, webhook_url, store)
@@ -62,11 +74,11 @@ def _on_anomaly(env, store, thresholds) -> None:
         log.debug("anomaly flagged", domain=env.get("domain"), score=score, threshold=threshold)
 
 
-def build_handler(store, cooldown, thresholds, smtp_cfg, webhook_url):
+def build_handler(store, cooldown, thresholds, smtp_cfg, webhook_url, repo=None):
     def handle(env: dict, routing_key: str) -> None:
         event = env.get("event")
         if event == "alert.triggered":
-            _on_alert(env, store, cooldown, smtp_cfg, webhook_url)
+            _on_alert(env, store, cooldown, smtp_cfg, webhook_url, repo)
         elif event == "anomaly.scored":
             _on_anomaly(env, store, thresholds)
         else:

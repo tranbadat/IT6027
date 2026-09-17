@@ -9,14 +9,30 @@ import asyncio
 import uvicorn
 
 from common import config
+from common import db as db_mod
 from common import logging as log
 
 import app as app_mod
 import consumer as consumer_mod
+import repo as repo_mod
 import store as store_mod
 from stream import StreamHub
 
 SOURCE = "p5-dashboard"
+
+
+def _init_repo():
+    """Mở kho lịch sử tấn công (Postgres) nếu có DATABASE_URL. Lỗi -> degrade in-memory."""
+    dsn = config.env("DATABASE_URL", "")
+    if not dsn:
+        return None
+    try:
+        repo = repo_mod.AttackRepo(db_mod.pool(dsn))
+        repo.ensure_schema()
+        return repo
+    except Exception as exc:
+        log.error("cannot init attack repo, bỏ qua lưu DB", error=str(exc))
+        return None
 
 
 def main() -> None:
@@ -27,8 +43,9 @@ def main() -> None:
 
     store = store_mod.AggregateStore()
     hub = StreamHub()
-    handler = consumer_mod.build_handler(store, hub)
-    app = app_mod.create_app(store, hub)
+    repo = _init_repo()
+    handler = consumer_mod.build_handler(store, hub, repo)
+    app = app_mod.create_app(store, hub, repo)
 
     @app.on_event("startup")
     def _startup() -> None:

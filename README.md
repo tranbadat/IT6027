@@ -58,7 +58,7 @@ Ràng buộc xuyên suốt: mọi service **phải** gọi `GET /scope/check` (P
 | Module | Nhiệm vụ | Output |
 |---|---|---|
 | D1 | Rule engine **tự viết**: đọc rule YAML/JSON, matcher regex/pattern trên URL, query string, body, header. Tối thiểu 3 nhóm: SQL Injection, XSS, path traversal | `attack.detected` |
-| D2 | API CRUD quản lý rule, validate schema, chặn regex gây backtracking không kiểm soát | — |
+| D2 | API CRUD quản lý rule, validate schema, chặn regex gây backtracking không kiểm soát; kèm **UI quản trị rule** tại `/rules` | — |
 | D3 | Chấm điểm kết hợp số rule khớp + tín hiệu thống kê (tần suất, tỷ lệ mã lỗi) | `anomaly.scored`, `alert.triggered` |
 
 D1 là lõi kỹ thuật của đề tài — không chỉ nạp lại bộ rule có sẵn (OWASP CRS) mà phải tự xử lý logic khớp mẫu.
@@ -113,13 +113,18 @@ Cắm sensor vào Nginx thật của một app: đặt `SENSOR_NGINX_LOG_DIR` + 
 
 ### Giám sát (Prometheus + Grafana)
 
-Stack add-on `deploy/observability` cung cấp thống kê log & lỗi phát hiện, không sửa service nào:
+Stack add-on `deploy/observability` biến Grafana thành trung tâm giám sát (không sửa service nào):
 
 ```bash
-make obs-up      # Prometheus + Grafana + metrics-exporter (đọc từ event bus + RabbitMQ)
+make obs-up      # Prometheus + Loki/Promtail + Grafana + metrics-exporter
 ```
 
-Grafana: http://localhost:3000 (dashboard "WAF Log Analyzer — Tổng quan" tự nạp sẵn) · Prometheus: http://localhost:9090. Chi tiết + PromQL mẫu: [`docs/observability.md`](docs/observability.md).
+**Grafana** (http://localhost:3000) tự nạp 3 dashboard:
+- **Tổng quan** — metrics (Prometheus): tấn công theo loại, top rule, queue depth…
+- **Realtime / SOC** — đọc thẳng Postgres (`detection.attacks`, `alerting.alerts`): bảng cảnh báo/tấn công chi tiết, top IP/loại, refresh 5s — **thay dashboard realtime P5** (P5 vẫn chạy làm backend ghi DB).
+- **Logs tập trung** — Loki/Promtail gom log stdout của mọi service, lọc theo `service`.
+
+Prometheus: http://localhost:9090. Chi tiết + PromQL/LogQL mẫu: [`docs/observability.md`](docs/observability.md).
 
 ## Nguyên tắc phát triển
 

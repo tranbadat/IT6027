@@ -13,9 +13,14 @@ SOURCE = "p5-dashboard"
 _REALTIME_EVENTS = {"attack.detected", "anomaly.scored", "alert.triggered", "log.enriched"}
 
 
-def build_handler(store, hub):
+def build_handler(store, hub, repo=None):
     def handle(env: dict, routing_key: str) -> None:
         store.record(env)
+        if repo is not None and env.get("event") == "attack.detected":
+            try:
+                repo.insert_from_event(env)
+            except Exception as exc:  # best-effort, không làm chết handler
+                log.warning("persist attack failed", error=str(exc), event_id=env.get("event_id"))
         if env.get("event") in _REALTIME_EVENTS:
             hub.publish_threadsafe({
                 "event": env.get("event"),

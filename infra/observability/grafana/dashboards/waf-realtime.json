@@ -1,0 +1,66 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "id": null,
+  "uid": "waf-realtime",
+  "title": "WAF Log Analyzer — Realtime / SOC",
+  "tags": ["waf", "soc"],
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "5s",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Tấn công (tổng, DB)",
+      "datasource": { "type": "postgres", "uid": "postgres-waf" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "postgres", "uid": "postgres-waf" }, "format": "table", "rawSql": "SELECT count(*) AS \"tấn công\" FROM detection.attacks" }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Cảnh báo (tổng, DB)",
+      "datasource": { "type": "postgres", "uid": "postgres-waf" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "postgres", "uid": "postgres-waf" }, "format": "table", "rawSql": "SELECT count(*) AS \"cảnh báo\" FROM alerting.alerts" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Domain bị tấn công",
+      "datasource": { "type": "postgres", "uid": "postgres-waf" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "postgres", "uid": "postgres-waf" }, "format": "table", "rawSql": "SELECT count(DISTINCT domain) AS \"domain\" FROM detection.attacks" }]
+    },
+    {
+      "id": 4, "type": "table", "title": "Top loại tấn công",
+      "datasource": { "type": "postgres", "uid": "postgres-waf" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "postgres", "uid": "postgres-waf" }, "format": "table", "rawSql": "SELECT attack_type AS \"loại\", count(*) AS \"số lần\" FROM detection.attacks GROUP BY attack_type ORDER BY 2 DESC" }]
+    },
+    {
+      "id": 5, "type": "table", "title": "Top IP nguồn tấn công",
+      "datasource": { "type": "postgres", "uid": "postgres-waf" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "postgres", "uid": "postgres-waf" }, "format": "table", "rawSql": "SELECT src_ip AS \"IP\", count(*) AS \"số lần\", max(detected_at) AS \"gần nhất\" FROM detection.attacks GROUP BY src_ip ORDER BY 2 DESC LIMIT 15" }]
+    },
+    {
+      "id": 6, "type": "table", "title": "Cảnh báo gần đây",
+      "datasource": { "type": "postgres", "uid": "postgres-waf" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "sortBy": [{ "displayName": "thời điểm", "desc": true }] },
+      "targets": [{ "refId": "A", "datasource": { "type": "postgres", "uid": "postgres-waf" }, "format": "table", "rawSql": "SELECT triggered_at AS \"thời điểm\", domain, severity AS \"mức\", array_to_string(attack_types, ', ') AS \"loại\", src_ip AS \"IP\", url, reason AS \"lý do\" FROM alerting.alerts ORDER BY triggered_at DESC LIMIT 100" }]
+    },
+    {
+      "id": 7, "type": "table", "title": "Tấn công phát hiện gần đây (chi tiết)",
+      "datasource": { "type": "postgres", "uid": "postgres-waf" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 21 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "sortBy": [{ "displayName": "thời điểm", "desc": true }] },
+      "targets": [{ "refId": "A", "datasource": { "type": "postgres", "uid": "postgres-waf" }, "format": "table", "rawSql": "SELECT detected_at AS \"thời điểm\", domain, attack_type AS \"loại\", severity AS \"mức\", rule_id AS \"rule\", src_ip AS \"IP\", url, matched_value AS \"khớp\" FROM detection.attacks ORDER BY detected_at DESC LIMIT 200" }]
+    }
+  ]
+}

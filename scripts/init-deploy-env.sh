@@ -22,15 +22,23 @@ else
   rabbit_pass="$(openssl rand -hex 16)"
   postgres_pass="$(openssl rand -hex 16)"
   jwt_secret="$(openssl rand -hex 32)"
+  grafana_db_pass="$(openssl rand -hex 16)"
   umask 077
   sed -e "s/^RABBITMQ_PASSWORD=.*/RABBITMQ_PASSWORD=${rabbit_pass}/" \
       -e "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${postgres_pass}/" \
       -e "s/^JWT_SECRET=.*/JWT_SECRET=${jwt_secret}/" \
+      -e "s/^GRAFANA_DB_PASSWORD=.*/GRAFANA_DB_PASSWORD=${grafana_db_pass}/" \
       "$DEPLOY/platform/.env.example" > "$platform_env"
   echo "Đã tạo deploy/platform/.env"
 fi
 
 bus_url="amqp://${rabbit_user}:${rabbit_pass}@rabbitmq:5672/"
+
+# Đọc creds Postgres từ platform/.env để observability (Grafana) khớp khi query DB.
+pg_user="$(grep -E '^POSTGRES_USER=' "$platform_env" | cut -d= -f2-)"
+pg_pass="$(grep -E '^POSTGRES_PASSWORD=' "$platform_env" | cut -d= -f2-)"
+pg_db="$(grep -E '^POSTGRES_DB=' "$platform_env" | cut -d= -f2-)"
+grafana_db_pass="$(grep -E '^GRAFANA_DB_PASSWORD=' "$platform_env" | cut -d= -f2-)"
 
 for stack in pipeline sensor observability; do
   target="$DEPLOY/$stack/.env"
@@ -39,9 +47,12 @@ for stack in pipeline sensor observability; do
     continue
   fi
   umask 077
+  # Các dòng POSTGRES_* chỉ có trong observability/.env.example -> no-op với pipeline/sensor.
   sed -e "s#^EVENT_BUS_URL=.*#EVENT_BUS_URL=${bus_url}#" \
+      -e "s#^POSTGRES_DB=.*#POSTGRES_DB=${pg_db:-waf}#" \
+      -e "s#^GRAFANA_DB_PASSWORD=.*#GRAFANA_DB_PASSWORD=${grafana_db_pass}#" \
       "$DEPLOY/$stack/.env.example" > "$target"
-  echo "Đã tạo deploy/$stack/.env (trỏ về bus của Platform)"
+  echo "Đã tạo deploy/$stack/.env (trỏ về bus/DB của Platform)"
 done
 
 echo "Xong. Nhớ: nếu chạy khác máy, sửa host trong EVENT_BUS_URL/SCOPE_SERVICE_URL của pipeline & sensor."
