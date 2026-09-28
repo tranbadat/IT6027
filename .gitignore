@@ -1,0 +1,11 @@
+.env
+data/
+.DS_Store
+__pycache__/
+*.pyc
+
+# Tài liệu/biểu mẫu, export design — không commit
+*.docx
+*.docm
+Template-*/
+docs/design/*.html

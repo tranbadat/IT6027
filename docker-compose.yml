@@ -1,0 +1,149 @@
+# Nhánh c1 — Người 1: Log Collection (C1 → C2 → C3).
+# Chạy hạ tầng tối thiểu để sinh dữ liệu log.enriched cho Người 2 tiêu thụ.
+#   make up      # dựng web mục tiêu + RabbitMQ + mock scope + C1/C2/C3
+#   make demo    # gửi request thử -> sinh log
+#   make peek-enriched   # xem 1 bản ghi log.enriched trên bus
+name: waf-collection
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+x-app-env: &app-env
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  EVENT_BUS_URL: amqp://${RABBITMQ_USER:?set RABBITMQ_USER in .env}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}@rabbitmq:5672/
+  EVENT_EXCHANGE: waf.events
+  SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://mock-api}
+  HTTP_PORT: "8000"
+
+x-app: &app
+  restart: unless-stopped
+  logging: *logging
+  networks: [waf]
+  depends_on:
+    rabbitmq: { condition: service_healthy }
+    mock-api: { condition: service_healthy }
+
+services:
+  # ── Web mục tiêu (bị giám sát) — sinh access log ──
+  web-nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf]
+    ports:
+      - "127.0.0.1:${WEB_NGINX_PORT:-8081}:80"
+    volumes:
+      - ./infra/web-nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./infra/web-nginx/html:/usr/share/nginx/html:ro
+      - nginx-logs:/var/log/waf/nginx
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  web-apache:
+    profiles: [apache]
+    build: ./infra/web-apache
+    image: waf/web-apache:dev
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf]
+    ports:
+      - "127.0.0.1:${WEB_APACHE_PORT:-8082}:80"
+    volumes:
+      - apache-logs:/var/log/waf/apache
+
+  # ── Hạ tầng ──
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    hostname: rabbitmq
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf]
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "127.0.0.1:${RABBITMQ_AMQP_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./infra/rabbitmq:/etc/rabbitmq/waf:ro
+    # Nạp exchange/queue/binding sau khi node khởi động (idempotent).
+    post_start:
+      - command: ["sh", "/etc/rabbitmq/waf/load-topology.sh", "--boot"]
+        user: rabbitmq
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/topology-ready && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # Mock Scope Service (P1) — để C1/C2/C3 kiểm tra scope mà không cần Người 3.
+  mock-api:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [waf]
+    ports:
+      - "127.0.0.1:${MOCK_API_PORT:-4010}:80"
+    volumes:
+      - ./infra/mock-api/conf.d:/etc/nginx/conf.d:ro
+      - ./infra/mock-api:/etc/nginx/mock:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ── Người 1: Log Collection ──
+  c1-ingestion:
+    <<: *app
+    build:
+      context: ./services
+      dockerfile: c1-ingestion/Dockerfile
+    image: waf/c1-ingestion:dev
+    environment:
+      <<: *app-env
+      LOG_DIR: /var/log/waf
+    volumes:
+      - nginx-logs:/var/log/waf/nginx:ro
+      - apache-logs:/var/log/waf/apache:ro
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      mock-api: { condition: service_healthy }
+      web-nginx: { condition: service_started }
+
+  c2-parser:
+    <<: *app
+    build:
+      context: ./services
+      dockerfile: c2-parser/Dockerfile
+    image: waf/c2-parser:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.c2-parser
+
+  c3-enrichment:
+    <<: *app
+    build:
+      context: ./services
+      dockerfile: c3-enrichment/Dockerfile
+    image: waf/c3-enrichment:dev
+    environment:
+      <<: *app-env
+      EVENT_QUEUE: q.c3-enrichment
+      GEOIP_DB_PATH: /data/geoip/dbip-city-lite.mmdb
+    volumes:
+      - ./data/geoip:/data/geoip:ro
+
+networks:
+  waf:
+
+volumes:
+  nginx-logs:
+  apache-logs:
+  rabbitmq-data:

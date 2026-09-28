@@ -1,114 +1,54 @@
-# IT6027 — WAF Log Analyzer
+# IT6027 — Nhánh `c1`: Log Collection (Người 1)
 
-Hệ thống giám sát và phát hiện tấn công web: thu thập log truy cập từ Nginx/Apache theo thời gian thực, chuẩn hoá, phát hiện các mẫu tấn công bằng rule engine tự viết, chấm điểm bất thường và cảnh báo trên dashboard.
-
-> Phạm vi: **chỉ phát hiện và cảnh báo**. Hệ thống không tự động chặn IP hay thay đổi cấu hình web server. Mọi tính năng phản ứng tự động (nếu có) bắt buộc qua phê duyệt thủ công và mặc định chạy ở chế độ dry run.
-
-## Kiến trúc
-
-Các service độc lập, giao tiếp qua event bus với một event schema thống nhất:
+Nhánh này chứa **phần Người 1** của WAF Log Analyzer: thu thập và chuẩn hoá log truy cập web, rồi publish lên event bus cho Người 2 (Detection) tiêu thụ.
 
 ```
-{ event, request_id | session_id, timestamp, data }
+Nginx/Apache access log ─► C1 ingestion ─► log.raw.ingested
+                                            │
+                              C2 parser ────► log.normalized
+                                            │
+                          C3 enrichment ────► log.enriched   ◄── Người 2 tiêu thụ từ đây
 ```
 
-Luồng event chính:
+Kèm hạ tầng tối thiểu để **Người 2 chạy được và lấy dữ liệu**: web mục tiêu (Nginx), RabbitMQ (bus), và **mock Scope Service** (thay P1 của Người 3 — chưa cần).
 
-```
-Nginx / Apache access log
-        │
-        ▼
-C1 Log Ingestion ──► log.raw.ingested
-        │
-        ▼
-C2 Parsing & Normalize ──► log.normalized
-        │
-        ▼
-C3 Enrichment & Session ──► log.enriched
-        │
-        ├──────────────────────────────┐
-        ▼                              ▼
-D1 Rule Engine ──► attack.detected   D3 Anomaly Scoring
-        │                              │
-        │                              ▼
-        │                       anomaly.scored ──► alert.triggered
-        ▼                                              │
-   D2 Rule Management (CRUD API)                       ▼
-                                              P4 Alerting (webhook / email)
-                                                       │
-P1 Scope Service ◄── mọi service gọi trước khi xử lý   ▼
-P2 Auth Gateway (JWT)                          P5 Dashboard realtime
-P3 Pipeline Orchestration ──► stage.completed
+## Chạy
+
+Yêu cầu: Docker + Docker Compose (2.30+), `make`, `curl`, `jq`, `openssl`.
+
+```bash
+make up            # dựng web-nginx + rabbitmq + mock-api + C1 + C2 + C3
+make demo          # gửi request thử (bình thường + SQLi/XSS/path traversal) -> sinh log
+make peek-enriched # xem vài bản ghi log.enriched trên bus
 ```
 
-Ràng buộc xuyên suốt: mọi service **phải** gọi `GET /scope/check` (P1) trước khi xử lý log của một domain mới. Không service nào được xử lý log ngoài phạm vi đã xác nhận.
+- Web mục tiêu: http://localhost:8081 (`shop.local`, `internal.local`)
+- RabbitMQ UI: http://localhost:15672 (tài khoản trong `.env`)
 
-## Module
+## Người 2 lấy dữ liệu thế nào
 
-### Log Collection (Người 1)
+C3 publish event **`log.enriched`** lên exchange topic **`waf.events`**. Có sẵn queue **`q.enriched`** đã bind `log.enriched` để tiêu thụ ngay:
+
+- Kết nối bus: `amqp://<user>:<pass>@localhost:5672/` (creds trong `.env`).
+- Consume queue `q.enriched`, hoặc tự bind queue riêng của bạn vào `waf.events` với routing key `log.enriched` / `log.normalized` / `log.raw.ingested`.
+- Xem nhanh không tiêu thụ mất: `make peek-enriched`.
+
+Cấu trúc event (vỏ chung + `data`): xem [`contracts/events/README.md`](contracts/events/README.md) và [`contracts/events/envelope.schema.json`](contracts/events/envelope.schema.json). Trường của `log.enriched.data`: `src_ip, method, path, query_string, status, host, user_agent, request_ts, path_decoded, query_decoded, session_id, req_count_1m, geo`.
+
+## Module (Người 1)
 
 | Module | Nhiệm vụ | Output |
 |---|---|---|
-| C1 | Đọc access log theo cơ chế tail liên tục (file/volume mount) hoặc nhận qua syslog; xử lý log rotation | `log.raw.ingested` |
-| C2 | Parse combined log format của Nginx/Apache; xử lý dòng lỗi định dạng, URL encode | `log.normalized` |
-| C3 | GeoIP theo IP, gom phiên theo IP + cookie, tính tần suất request | `log.enriched` |
+| **C1** `services/c1-ingestion` | Tail access log (Nginx/Apache), xử lý log rotation, suy domain từ tên file, kiểm tra scope | `log.raw.ingested` |
+| **C2** `services/c2-parser` | Parse combined log (kể cả combined chuẩn không có host/rt/sid), giải mã URL | `log.normalized` |
+| **C3** `services/c3-enrichment` | GeoIP (tuỳ chọn), gom phiên, tần suất request theo IP | `log.enriched` |
 
-### Detection Engine (Người 2)
+Chạy unit test: `make test` (parser, enrichment, tailer).
 
-| Module | Nhiệm vụ | Output |
-|---|---|---|
-| D1 | Rule engine **tự viết**: đọc rule YAML/JSON, matcher regex/pattern trên URL, query string, body, header. Tối thiểu 3 nhóm: SQL Injection, XSS, path traversal | `attack.detected` |
-| D2 | API CRUD quản lý rule, validate schema, chặn regex gây backtracking không kiểm soát | — |
-| D3 | Chấm điểm kết hợp số rule khớp + tín hiệu thống kê (tần suất, tỷ lệ mã lỗi) | `anomaly.scored`, `alert.triggered` |
+GeoIP là tuỳ chọn — thiếu file DB thì `geo=null` (không lỗi). Đặt file tại `data/geoip/dbip-city-lite.mmdb` nếu muốn.
 
-D1 là lõi kỹ thuật của đề tài — không chỉ nạp lại bộ rule có sẵn (OWASP CRS) mà phải tự xử lý logic khớp mẫu.
+## Phạm vi (scope)
 
-### Platform (Người 3)
+Mọi service chỉ xử lý log của domain đã được Scope Service xác nhận. Nhánh này dùng **mock** (`infra/mock-api`, cho phép `shop.local`, `blog.local`, `shop-app`). Khi Người 3 có P1 thật: đổi `SCOPE_SERVICE_URL` trong `.env` sang `http://p1-scope:8000`.
 
-| Module | Nhiệm vụ |
-|---|---|
-| P1 | Scope Management — `GET /scope/check`, làm đầu tiên |
-| P2 | Auth Gateway — JWT cho API nội bộ, định tuyến giữa các service |
-| P3 | Pipeline Orchestration — cấu hình pipeline YAML, theo dõi trạng thái xử lý |
-| P4 | Alerting — webhook/email, ngưỡng cảnh báo riêng theo domain |
-| P5 | Dashboard realtime — traffic theo domain, top loại tấn công, top IP nguồn, lịch sử cảnh báo |
-
-## Nguyên tắc phát triển
-
-- **Interface first**: Người 3 định nghĩa OpenAPI/JSON schema và dựng mock server cho Scope Service, Event Bus, Auth ngay tuần 1 để ba người phát triển song song.
-- Mỗi service có `Dockerfile` riêng, một `docker-compose.yml` chung ở gốc repository để chạy thử toàn hệ thống trên máy cá nhân.
-- Daily sync ~15 phút: báo cáo API nào đã thật, API nào còn mock.
-- Mỗi service có README và tài liệu OpenAPI riêng.
-
-## Mốc tích hợp
-
-| Giai đoạn | Nội dung | Phụ thuộc |
-|---|---|---|
-| 0 | API contract + mock Scope/Auth/Event Bus (P3) | — |
-| 1 | C1 Log Ingestion | mock Scope Service |
-| 2 | C2, C3 Parsing & Enrichment | giai đoạn 1 |
-| 3 | D1, D2 Rule Engine & quản lý rule | `log.enriched` thật hoặc dữ liệu mẫu |
-| 4 | D3 Chấm điểm bất thường | `attack.detected` thật |
-| 5 | P3 Pipeline Orchestration nối toàn bộ | giai đoạn 1–4, API thật |
-| 6 | Alerting, Dashboard, kiểm thử toàn trình | giai đoạn 5 |
-
-Tổng thời gian: 4 tuần. Lịch trình chi tiết theo tuần cho từng người: xem [`ke_hoach_waf_log_analyzer.md`](ke_hoach_waf_log_analyzer.md).
-
-## Định nghĩa hoàn thành
-
-Chạy được một kịch bản thật end-to-end theo hướng realtime, không nạp file log thủ công:
-
-1. Trỏ Log Collector vào log đang được một Nginx/Apache thật ghi liên tục cho một domain đã khai báo.
-2. Gửi một số request thử tới web server đó, trong đó có ít nhất một request dạng SQL Injection.
-3. Hệ thống tự đọc log mới → chuẩn hoá → khớp rule tấn công tự viết → chấm điểm bất thường.
-4. Kết quả hiển thị gần như tức thời trên dashboard kèm cảnh báo tương ứng.
-
-Kèm theo:
-
-- Không service nào xử lý log của domain ngoài phạm vi đã xác nhận qua Scope Service.
-- Không có hành vi tự động chặn IP hay thay đổi hệ thống.
-- Có tài liệu OpenAPI và README cho từng service để người ngoài nhóm chạy lại được.
-
-## Tài liệu
-
-- [`ke_hoach_waf_log_analyzer.md`](ke_hoach_waf_log_analyzer.md) — kế hoạch triển khai đầy đủ: phân công, chi tiết từng module, lịch trình 4 tuần.
+> Toàn hệ thống (Detection của Người 2, Platform của Người 3, observability) nằm ở nhánh `dev`.
