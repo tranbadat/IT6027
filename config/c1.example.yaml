@@ -1,0 +1,30 @@
+# Cấu hình nguồn log cho C1. Trỏ biến môi trường C1_CONFIG tới file này.
+# Mỗi nguồn ánh xạ tới MỘT domain; C1 gọi Scope Service để xác nhận domain trước khi publish.
+queue_size: 10000        # hàng đợi nội bộ (backpressure: đầy thì ngừng đọc file)
+poll_interval: 0.25      # giây; độ trễ tối đa khi có dòng log mới
+
+sources:
+  # --- Cách 1: đọc file trực tiếp (cùng máy, hoặc volume mount trong Docker)
+  - name: shop-nginx
+    type: file
+    path: /var/log/nginx/waf-access.log
+    domain: shop.example.com
+    server: nginx               # nginx | apache | unknown (chỉ để gắn nhãn)
+    start_at: end               # end: chỉ log mới từ lúc service chạy | beginning: đọc cả lịch sử
+    max_line_bytes: 65536       # dòng dài hơn bị cắt (truncated=true)
+    # multiline:                # mặc định tắt; Nginx/Apache đã escape xuống dòng
+    #   enabled: true
+    #   start_pattern: '^\S+ \S+ \S+(?: \S+)? \['
+    #   flush_after: 1.0
+
+  # --- Cách 2: nhận qua syslog (web server ở máy khác)
+  # Nginx: access_log syslog:server=<collector>:5514,tag=blog_example waf;
+  - name: syslog-udp
+    type: syslog
+    protocol: udp               # udp | tcp
+    listen: 0.0.0.0:5514
+    server: nginx
+    domain: shop.example.com    # domain mặc định nếu không khớp tag/host
+    tag_domains:                # ánh xạ tag syslog -> domain
+      blog_example: blog.example.com
+    host_domains: {}            # hoặc ánh xạ hostname -> domain

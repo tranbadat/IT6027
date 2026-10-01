@@ -1,0 +1,9 @@
+queue_size: 10000
+poll_interval: 0.25
+sources:
+  - name: shop-nginx
+    type: file
+    path: /var/log/nginx/waf-access.log
+    domain: shop.example.com
+    server: nginx
+    start_at: end
