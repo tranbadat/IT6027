@@ -1,0 +1,53 @@
+# Môi trường dev cho riêng phần Log Collection (Người 1): Redis + mock Scope + Nginx thật + C1/C2/C3.
+# Khi Người 3 hoàn thành docker-compose gốc, phần này chỉ cần copy các service c1/c2/c3 sang.
+#   docker compose up --build
+#   curl -H 'Host: shop.example.com' "http://localhost:8080/products?id=1'%20OR%20'1'='1"
+#   docker compose exec redis redis-cli XRANGE waf:events:log.enriched - +
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  mock-scope:                       # thay bằng Scope Service thật của Người 3 khi có
+    build: {context: ., target: c1}
+    command: ["python", "-m", "wafcollect.tools.mock_scope", "--allow", "shop.example.com", "--port", "8081"]
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports: ["8080:80"]
+    volumes:
+      - ./dev/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - nginx-logs:/var/log/nginx
+
+  c1:
+    build: {context: ., target: c1}
+    depends_on: [redis, mock-scope, nginx]
+    environment:
+      BUS_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      SCOPE_URL: http://mock-scope:8081
+      C1_CONFIG: /etc/wafcollect/c1.yaml
+    volumes:
+      - ./config/c1.docker.yaml:/etc/wafcollect/c1.yaml:ro
+      - nginx-logs:/var/log/nginx:ro
+      - c1-state:/var/lib/wafcollect
+
+  c2:
+    build: {context: ., target: c2}
+    depends_on: [redis, mock-scope]
+    environment: {BUS_BACKEND: redis, REDIS_URL: "redis://redis:6379/0", SCOPE_URL: "http://mock-scope:8081"}
+
+  c3:
+    build: {context: ., target: c3}
+    depends_on: [redis, mock-scope]
+    environment:
+      BUS_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      SCOPE_URL: http://mock-scope:8081
+      GEOIP_DB_PATH: /geoip/GeoLite2-City.mmdb      # bỏ qua nếu chưa có database (geo.status=disabled)
+    volumes:
+      - ./data/geoip:/geoip:ro
+
+volumes:
+  nginx-logs:
+  c1-state:

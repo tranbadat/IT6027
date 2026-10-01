@@ -1,114 +1,122 @@
-# IT6027 — WAF Log Analyzer
+# Log Collection (Người 1): C1 · C2 · C3
 
-Hệ thống giám sát và phát hiện tấn công web: thu thập log truy cập từ Nginx/Apache theo thời gian thực, chuẩn hoá, phát hiện các mẫu tấn công bằng rule engine tự viết, chấm điểm bất thường và cảnh báo trên dashboard.
-
-> Phạm vi: **chỉ phát hiện và cảnh báo**. Hệ thống không tự động chặn IP hay thay đổi cấu hình web server. Mọi tính năng phản ứng tự động (nếu có) bắt buộc qua phê duyệt thủ công và mặc định chạy ở chế độ dry run.
-
-## Kiến trúc
-
-Các service độc lập, giao tiếp qua event bus với một event schema thống nhất:
+Thu thập access log của Nginx/Apache **theo thời gian thực**, chuẩn hoá và làm giàu, rồi publish lên event bus
+cho Detection Engine (Người 2) tiêu thụ.
 
 ```
-{ event, request_id | session_id, timestamp, data }
+Nginx/Apache log file ─┐
+                       ├─► C1 Ingestion ─► log.raw.ingested ─► C2 Parsing ─┬► log.normalized ─► C3 Enrichment ─► log.enriched
+syslog (UDP/TCP) ──────┘                                                   └► log.parse_failed (dead-letter)
 ```
 
-Luồng event chính:
+| Module | Việc làm | Consume → Publish |
+| --- | --- | --- |
+| **C1** Log Ingestion | Tail file liên tục (xử lý rotation/truncate, resume sau restart) hoặc nhận syslog; kiểm tra Scope trước khi publish | — → `log.raw.ingested` |
+| **C2** Parsing | Parse combined/common/vhost_combined; giải mã URL (kể cả double-encoding); chịu được dòng hỏng | `log.raw.ingested` → `log.normalized` |
+| **C3** Enrichment | GeoIP, gom phiên theo IP + cookie, tần suất và tỷ lệ lỗi theo IP (cửa sổ trượt 10s/60s), bộ nhớ có giới hạn | `log.normalized` → `log.enriched` |
 
-```
-Nginx / Apache access log
-        │
-        ▼
-C1 Log Ingestion ──► log.raw.ingested
-        │
-        ▼
-C2 Parsing & Normalize ──► log.normalized
-        │
-        ▼
-C3 Enrichment & Session ──► log.enriched
-        │
-        ├──────────────────────────────┐
-        ▼                              ▼
-D1 Rule Engine ──► attack.detected   D3 Anomaly Scoring
-        │                              │
-        │                              ▼
-        │                       anomaly.scored ──► alert.triggered
-        ▼                                              │
-   D2 Rule Management (CRUD API)                       ▼
-                                              P4 Alerting (webhook / email)
-                                                       │
-P1 Scope Service ◄── mọi service gọi trước khi xử lý   ▼
-P2 Auth Gateway (JWT)                          P5 Dashboard realtime
-P3 Pipeline Orchestration ──► stage.completed
+Schema các event: [`docs/event-schema.md`](docs/event-schema.md) · [`schemas/log-events.schema.json`](schemas/log-events.schema.json).
+Cấu hình web server: [`docs/web-server-setup.md`](docs/web-server-setup.md).
+
+> Ba module này không có HTTP API (chỉ đọc/ghi event và gọi Scope Service), nên tài liệu giao tiếp là event schema ở trên chứ không phải OpenAPI.
+
+## Chạy thử
+
+### Cách 1 — Docker Compose (Nginx + Redis + C1–C3 + mock Scope)
+
+```bash
+docker compose up --build
+curl -H 'Host: shop.example.com' "http://localhost:8080/products?id=1'%20OR%20'1'='1"
+docker compose exec redis redis-cli XRANGE waf:events:log.enriched - +
 ```
 
-Ràng buộc xuyên suốt: mọi service **phải** gọi `GET /scope/check` (P1) trước khi xử lý log của một domain mới. Không service nào được xử lý log ngoài phạm vi đã xác nhận.
+### Cách 2 — Chạy trực tiếp
 
-## Module
+```bash
+pip install -r requirements.txt
+export BUS_BACKEND=redis REDIS_URL=redis://localhost:6379/0 SCOPE_URL=http://localhost:8081
+python -m wafcollect.tools.mock_scope --allow shop.example.com --port 8081 &   # thay bằng P1 thật khi có
+C1_CONFIG=config/c1.example.yaml python -m wafcollect.c1_ingestion &
+python -m wafcollect.c2_parsing &
+python -m wafcollect.c3_enrichment &
+```
 
-### Log Collection (Người 1)
+`BUS_BACKEND=memory` chỉ dùng trong test (bus trong một process).
+`SCOPE_DISABLED=true` bỏ qua kiểm tra scope, **chỉ dùng khi phát triển cục bộ**; mặc định service từ chối khởi động nếu thiếu `SCOPE_URL`.
 
-| Module | Nhiệm vụ | Output |
-|---|---|---|
-| C1 | Đọc access log theo cơ chế tail liên tục (file/volume mount) hoặc nhận qua syslog; xử lý log rotation | `log.raw.ingested` |
-| C2 | Parse combined log format của Nginx/Apache; xử lý dòng lỗi định dạng, URL encode | `log.normalized` |
-| C3 | GeoIP theo IP, gom phiên theo IP + cookie, tính tần suất request | `log.enriched` |
+## Cấu hình (biến môi trường)
 
-### Detection Engine (Người 2)
+| Biến | Service | Mặc định | Ý nghĩa |
+| --- | --- | --- | --- |
+| `BUS_BACKEND` | C1–C3 | `redis` | `redis` \| `memory` |
+| `REDIS_URL` | C1–C3 | `redis://localhost:6379/0` | |
+| `SCOPE_URL`, `SCOPE_TOKEN` | C1–C3 | — | Scope Service (P1) và JWT tuỳ chọn |
+| `SCOPE_DISABLED` | C1–C3 | `false` | Chỉ để dev |
+| `C1_CONFIG` | C1 | `/etc/wafcollect/c1.yaml` | Danh sách nguồn log, xem `config/c1.example.yaml` |
+| `C1_STATE_PATH` | C1 | `/var/lib/wafcollect/c1-state.json` | Lưu `(inode, offset)` để resume |
+| `CONSUMER_NAME` | C2, C3 | `default` | Tên consumer trong Redis consumer group; giữ ổn định giữa các lần restart |
+| `GEOIP_DB_PATH` | C3 | — | File `.mmdb` GeoLite2 City hoặc Country; bỏ trống thì `geo.status=disabled` |
+| `SESSION_TIMEOUT_S` | C3 | `1800` | Phiên kết thúc sau chừng này giây im lặng |
+| `MAX_SESSIONS`, `MAX_TRACKED_IPS` | C3 | `50000`, `100000` | Trần bộ nhớ (LRU) |
+| `REDACT_COOKIE` | C3 | `true` | Che giá trị cookie trong `log.enriched` |
+| `LOG_LEVEL` | C1–C3 | `INFO` | |
 
-| Module | Nhiệm vụ | Output |
-|---|---|---|
-| D1 | Rule engine **tự viết**: đọc rule YAML/JSON, matcher regex/pattern trên URL, query string, body, header. Tối thiểu 3 nhóm: SQL Injection, XSS, path traversal | `attack.detected` |
-| D2 | API CRUD quản lý rule, validate schema, chặn regex gây backtracking không kiểm soát | — |
-| D3 | Chấm điểm kết hợp số rule khớp + tín hiệu thống kê (tần suất, tỷ lệ mã lỗi) | `anomaly.scored`, `alert.triggered` |
+### GeoIP database
 
-D1 là lõi kỹ thuật của đề tài — không chỉ nạp lại bộ rule có sẵn (OWASP CRS) mà phải tự xử lý logic khớp mẫu.
+Database **không** nằm trong repo (giấy phép MaxMind). Đăng ký miễn phí tại MaxMind, tải **GeoLite2-City** (hoặc Country) dạng `.mmdb`, đặt vào `data/geoip/` và trỏ `GEOIP_DB_PATH`. Chưa có database thì hệ thống vẫn chạy bình thường, chỉ thiếu thông tin quốc gia/thành phố.
 
-### Platform (Người 3)
+## Kiểm thử
 
-| Module | Nhiệm vụ |
-|---|---|
-| P1 | Scope Management — `GET /scope/check`, làm đầu tiên |
-| P2 | Auth Gateway — JWT cho API nội bộ, định tuyến giữa các service |
-| P3 | Pipeline Orchestration — cấu hình pipeline YAML, theo dõi trạng thái xử lý |
-| P4 | Alerting — webhook/email, ngưỡng cảnh báo riêng theo domain |
-| P5 | Dashboard realtime — traffic theo domain, top loại tấn công, top IP nguồn, lịch sử cảnh báo |
+```bash
+pip install -r requirements-dev.txt
+pytest                       # 96 test, ~25s
+./dev/e2e_local.sh           # cần nginx + redis-server cài sẵn trên máy
+./dev/e2e_vulnshop.sh        # + pip install flask (chỉ cho script demo này)
+```
 
-## Nguyên tắc phát triển
+`dev/e2e_local.sh` chạy đúng kịch bản "Định nghĩa hoàn thành" cho phần thu thập log: **Nginx thật** ghi log liên tục, ba service chạy như process riêng qua **Redis thật**, gửi request thật (có SQL Injection và path traversal double-encode), log rotation giữa chừng (`mv` + `nginx -s reopen`), một nguồn syslog UDP do Nginx gửi, và một domain ngoài phạm vi, rồi kiểm tra event ở đầu ra.
 
-- **Interface first**: Người 3 định nghĩa OpenAPI/JSON schema và dựng mock server cho Scope Service, Event Bus, Auth ngay tuần 1 để ba người phát triển song song.
-- Mỗi service có `Dockerfile` riêng, một `docker-compose.yml` chung ở gốc repository để chạy thử toàn hệ thống trên máy cá nhân.
-- Daily sync ~15 phút: báo cáo API nào đã thật, API nào còn mock.
-- Mỗi service có README và tài liệu OpenAPI riêng.
+`dev/e2e_vulnshop.sh` dùng khi **chưa có website thật** để lấy log: dựng một target CỐ Ý dễ tổn thương (`dev/vulnapp/app.py` — SQL Injection, XSS phản hồi, Path Traversal thật, chỉ chạy trên localhost), đặt Nginx thật trước nó, tự gửi traffic tấn công thật rồi chạy hết pipeline C1→C2→C3, kiểm tra event `log.enriched` sinh ra đúng (payload SQLi/XSS/traversal còn nguyên để Detection Engine phân tích, cookie phiên không bị lộ, session gom đúng theo attacker/người dùng thường). Tự chứa, không cần quyền root, không đụng cổng hệ thống hay `/etc/nginx`. **Không** dùng để tấn công website của người khác — chỉ target do script tự dựng trên máy bạn.
 
-## Mốc tích hợp
+Phạm vi đã kiểm chứng và chưa kiểm chứng:
 
-| Giai đoạn | Nội dung | Phụ thuộc |
-|---|---|---|
-| 0 | API contract + mock Scope/Auth/Event Bus (P3) | — |
-| 1 | C1 Log Ingestion | mock Scope Service |
-| 2 | C2, C3 Parsing & Enrichment | giai đoạn 1 |
-| 3 | D1, D2 Rule Engine & quản lý rule | `log.enriched` thật hoặc dữ liệu mẫu |
-| 4 | D3 Chấm điểm bất thường | `attack.detected` thật |
-| 5 | P3 Pipeline Orchestration nối toàn bộ | giai đoạn 1–4, API thật |
-| 6 | Alerting, Dashboard, kiểm thử toàn trình | giai đoạn 5 |
+| Đã chạy thực tế | Chưa chạy thực tế |
+| --- | --- |
+| Nginx thật (file + syslog UDP + rotation) → Redis thật → C1–C3 | `docker compose`/`Dockerfile` (môi trường phát triển không có Docker; mới kiểm tra cú pháp YAML) |
+| GeoIP với database test chính thức của MaxMind (City & Country, IPv4/IPv6) | GeoIP với GeoLite2 bản đầy đủ |
+| Redis Streams: consumer group, ack, giao lại message chưa ack sau restart | Apache thật (mới test với dòng log mẫu theo đúng `LogFormat` trong tài liệu) |
+| Restart C1 không mất/trùng dòng; Scope Service hoặc bus sập tạm thời không mất dòng | Tải lớn kéo dài |
 
-Tổng thời gian: 4 tuần. Lịch trình chi tiết theo tuần cho từng người: xem [`ke_hoach_waf_log_analyzer.md`](ke_hoach_waf_log_analyzer.md).
+Hiệu năng tham khảo (một core, sandbox, không phải benchmark chính thức): parser C2 ≈ 29 nghìn dòng/giây. Với 1 triệu request từ ~500 nghìn IP khác nhau, C3 giữ số phiên và số IP đúng ở trần cấu hình (50 nghìn / 100 nghìn), RAM đỉnh ≈ 150 MB. Thông lượng end-to-end phụ thuộc chủ yếu vào Redis, chưa đo.
 
-## Định nghĩa hoàn thành
+## Quyết định thiết kế đáng chú ý
 
-Chạy được một kịch bản thật end-to-end theo hướng realtime, không nạp file log thủ công:
+- **Không mất dữ liệu, không xử lý ngoài phạm vi.** Scope trả `denied` → bỏ dòng và đếm; Scope hoặc bus **không khả dụng** → tạm dừng và thử lại chứ không bỏ (fail-closed nhưng không mất log). C2 và C3 tự kiểm tra scope lại, không tin C1.
+- **At-least-once.** C1 chỉ lưu offset *sau khi* publish thành công. Crash có thể phát lại vài dòng, không bao giờ bỏ sót; downstream dedupe theo `request_id` nếu cần.
+- **Backpressure.** Hàng đợi có giới hạn: bus chậm thì C1 ngừng đọc file (dữ liệu vẫn nằm trên đĩa). UDP syslog không có backpressure nên datagram thừa bị bỏ và đếm (`dropped_udp_queue_full`).
+- **Dòng log lỗi vẫn được giữ.** Request line hỏng (TLS handshake gửi nhầm vào cổng HTTP, `"-"` của 408, method rác…) vẫn phát dưới dạng `parse_status: partial`, vì đó thường chính là traffic của scanner. Chỉ dòng hoàn toàn không nhận ra mới vào `log.parse_failed`.
+- **Giải mã URL lặp** tới khi ổn định (tối đa 5 lượt) và gắn cờ `double_encoded`, để `%252e%252e%252f` trở thành `../` trước khi tới rule engine. C2 chỉ giải mã và gắn tín hiệu, không kết luận tấn công (việc của Người 2).
+- **Che cookie.** Token phiên chỉ dùng để gom phiên ở C3, sau đó bị che khỏi `log.enriched` (kể cả trong `raw_line`). Giá trị cookie vẫn còn trong `log.normalized`, xem `docs/event-schema.md`.
+- **Thời gian theo sự kiện, không theo giờ hệ thống.** C3 dùng `request_time` trong log để tính cửa sổ và phiên, nên chạy lại log cũ vẫn cho kết quả đúng; `session_id` cũng xác định (deterministic).
 
-1. Trỏ Log Collector vào log đang được một Nginx/Apache thật ghi liên tục cho một domain đã khai báo.
-2. Gửi một số request thử tới web server đó, trong đó có ít nhất một request dạng SQL Injection.
-3. Hệ thống tự đọc log mới → chuẩn hoá → khớp rule tấn công tự viết → chấm điểm bất thường.
-4. Kết quả hiển thị gần như tức thời trên dashboard kèm cảnh báo tương ứng.
+## Giới hạn đã biết
 
-Kèm theo:
+- **Không có request body** (access log không ghi). Xem mục "Ràng buộc và giả định" trong `docs/event-schema.md`.
+- **Không xử lý `X-Forwarded-For`.** Nếu web server đứng sau proxy/CDN, `client_ip` là IP của proxy; cần cấu hình `real_ip` (Nginx) / `mod_remoteip` (Apache) phía web server.
+- **Chưa đọc error log.** Kế hoạch ghi là "có thể mở rộng"; hiện chỉ access log.
+- **Trạng thái phiên/tần suất của C3 nằm trong RAM**, mất khi restart và không chia sẻ giữa nhiều instance. Muốn scale ngang C3 phải phân vùng theo IP.
+- **Syslog TCP** chỉ hỗ trợ framing theo dòng (chưa có octet-counting RFC 6587).
+- Xem thêm giới hạn của `copytruncate` và rotation lúc C1 đang tắt trong `docs/web-server-setup.md`.
 
-- Không service nào xử lý log của domain ngoài phạm vi đã xác nhận qua Scope Service.
-- Không có hành vi tự động chặn IP hay thay đổi hệ thống.
-- Có tài liệu OpenAPI và README cho từng service để người ngoài nhóm chạy lại được.
+## Cấu trúc thư mục
 
-## Tài liệu
-
-- [`ke_hoach_waf_log_analyzer.md`](ke_hoach_waf_log_analyzer.md) — kế hoạch triển khai đầy đủ: phân công, chi tiết từng module, lịch trình 4 tuần.
+```
+wafcollect/
+  common/          events, bus (Redis Streams + in-memory), scope client, config, stats
+  c1_ingestion/    tailer (rotation/resume), syslog_receiver, service
+  c2_parsing/      parser (hàm thuần, không phụ thuộc bus), service
+  c3_enrichment/   geoip, sessions (gom phiên + tần suất), service
+  tools/           mock_scope
+tests/             96 test: unit + tích hợp C1→C2→C3 (kiểm schema từng event)
+schemas/ docs/ config/ dev/
+```

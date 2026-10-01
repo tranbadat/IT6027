@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://it6027.local/schemas/log-events.schema.json",
+  "title": "Event schema của Log Collection (Người 1)",
+  "description": "Ba event chính: log.raw.ingested (C1) -> log.normalized (C2) -> log.enriched (C3), cộng log.parse_failed (C2, dead-letter). Envelope chung: { event, request_id, [session_id], timestamp, data }.",
+  "$defs": {
+    "iso_time": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$" },
+    "nullable_string": { "type": ["string", "null"] },
+    "source": {
+      "type": "object",
+      "required": ["name", "type", "server"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "enum": ["file", "syslog"] },
+        "server": { "enum": ["nginx", "apache", "unknown"] },
+        "path": { "type": "string" },
+        "protocol": { "enum": ["udp", "tcp"] },
+        "host": { "$ref": "#/$defs/nullable_string" },
+        "tag": { "$ref": "#/$defs/nullable_string" },
+        "peer": { "$ref": "#/$defs/nullable_string" }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "required": ["event", "request_id", "timestamp", "data"],
+      "properties": {
+        "event": { "type": "string" },
+        "request_id": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string" },
+        "timestamp": { "$ref": "#/$defs/iso_time" },
+        "data": { "type": "object" }
+      }
+    },
+    "log_raw_ingested": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "properties": {
+            "event": { "const": "log.raw.ingested" },
+            "data": {
+              "type": "object",
+              "required": ["raw_line", "domain", "source", "collected_at", "truncated", "line_count"],
+              "properties": {
+                "raw_line": { "type": "string" },
+                "domain": { "type": "string", "minLength": 1 },
+                "source": { "$ref": "#/$defs/source" },
+                "collected_at": { "$ref": "#/$defs/iso_time" },
+                "truncated": { "type": "boolean" },
+                "line_count": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "normalized_data": {
+      "type": "object",
+      "required": [
+        "domain", "source", "collected_at", "parse_status", "parse_warnings", "client_ip",
+        "request_time", "request_time_source", "request_line", "method", "url", "path", "path_raw",
+        "query_string", "query_string_raw", "query_params", "http_version", "status",
+        "response_bytes", "response_time_ms", "headers", "decode_passes", "double_encoded", "raw_line"
+      ],
+      "properties": {
+        "domain": { "type": "string" },
+        "source": { "$ref": "#/$defs/source" },
+        "collected_at": { "$ref": "#/$defs/iso_time" },
+        "parse_status": { "enum": ["ok", "partial"] },
+        "parse_warnings": { "type": "array", "items": { "type": "string" } },
+        "vhost": { "$ref": "#/$defs/nullable_string" },
+        "client_ip": { "type": "string" },
+        "remote_user": { "$ref": "#/$defs/nullable_string" },
+        "request_time": { "$ref": "#/$defs/iso_time" },
+        "request_time_source": { "enum": ["log", "collected_at"] },
+        "request_line": { "type": "string" },
+        "method": { "$ref": "#/$defs/nullable_string" },
+        "url": { "$ref": "#/$defs/nullable_string" },
+        "path": { "$ref": "#/$defs/nullable_string" },
+        "path_raw": { "$ref": "#/$defs/nullable_string" },
+        "query_string": { "$ref": "#/$defs/nullable_string" },
+        "query_string_raw": { "$ref": "#/$defs/nullable_string" },
+        "query_params": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "value"],
+            "properties": { "name": { "type": "string" }, "value": { "type": "string" } }
+          }
+        },
+        "http_version": { "$ref": "#/$defs/nullable_string" },
+        "status": { "type": "integer", "minimum": 100, "maximum": 999 },
+        "response_bytes": { "type": "integer", "minimum": 0 },
+        "response_time_ms": { "type": ["number", "null"] },
+        "headers": {
+          "type": "object",
+          "required": ["referer", "user_agent"],
+          "properties": {
+            "referer": { "$ref": "#/$defs/nullable_string" },
+            "user_agent": { "$ref": "#/$defs/nullable_string" },
+            "cookie": { "$ref": "#/$defs/nullable_string" }
+          }
+        },
+        "decode_passes": { "type": "integer", "minimum": 0 },
+        "double_encoded": { "type": "boolean" },
+        "raw_line": { "type": "string" }
+      }
+    },
+    "log_normalized": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        { "properties": { "event": { "const": "log.normalized" }, "data": { "$ref": "#/$defs/normalized_data" } } }
+      ]
+    },
+    "log_enriched": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "required": ["session_id"],
+          "properties": {
+            "event": { "const": "log.enriched" },
+            "data": {
+              "allOf": [
+                { "$ref": "#/$defs/normalized_data" },
+                {
+                  "required": ["geo", "session", "frequency"],
+                  "properties": {
+                    "headers": { "not": { "required": ["cookie"] } },
+                    "geo": {
+                      "type": "object",
+                      "required": ["status"],
+                      "properties": {
+                        "status": { "enum": ["ok", "non_public", "invalid", "disabled", "not_found", "error"] },
+                        "country_code": { "$ref": "#/$defs/nullable_string" },
+                        "country_name": { "$ref": "#/$defs/nullable_string" },
+                        "city": { "$ref": "#/$defs/nullable_string" },
+                        "latitude": { "type": ["number", "null"] },
+                        "longitude": { "type": ["number", "null"] }
+                      }
+                    },
+                    "session": {
+                      "type": "object",
+                      "required": ["id", "is_new", "key_basis", "request_count", "error_count", "first_seen", "last_seen", "duration_s", "cookie_present"],
+                      "properties": {
+                        "id": { "type": "string" },
+                        "is_new": { "type": "boolean" },
+                        "key_basis": { "enum": ["ip", "ip+cookie"] },
+                        "request_count": { "type": "integer", "minimum": 1 },
+                        "error_count": { "type": "integer", "minimum": 0 },
+                        "first_seen": { "$ref": "#/$defs/iso_time" },
+                        "last_seen": { "$ref": "#/$defs/iso_time" },
+                        "duration_s": { "type": "number", "minimum": 0 },
+                        "cookie_present": { "type": "boolean" }
+                      }
+                    },
+                    "frequency": {
+                      "type": "object",
+                      "required": ["window_seconds", "requests_10s", "requests_60s", "errors_4xx_60s", "errors_5xx_60s", "error_ratio_60s"],
+                      "properties": {
+                        "window_seconds": { "type": "integer" },
+                        "requests_10s": { "type": "integer", "minimum": 0 },
+                        "requests_60s": { "type": "integer", "minimum": 0 },
+                        "errors_4xx_60s": { "type": "integer", "minimum": 0 },
+                        "errors_5xx_60s": { "type": "integer", "minimum": 0 },
+                        "error_ratio_60s": { "type": "number", "minimum": 0, "maximum": 1 }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "log_parse_failed": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "properties": {
+            "event": { "const": "log.parse_failed" },
+            "data": {
+              "type": "object",
+              "required": ["domain", "error", "raw_line"],
+              "properties": {
+                "domain": { "type": "string" },
+                "source": { "$ref": "#/$defs/source" },
+                "error": { "enum": ["empty_line", "unrecognized_format"] },
+                "raw_line": { "type": "string" },
+                "collected_at": { "$ref": "#/$defs/iso_time" }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
