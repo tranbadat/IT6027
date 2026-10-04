@@ -1,0 +1,4 @@
+target/
+.git/
+*.zip
+README.md
