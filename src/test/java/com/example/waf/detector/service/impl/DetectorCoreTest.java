@@ -1,9 +1,11 @@
 package com.example.waf.detector.service.impl;
 
 import com.example.waf.detector.config.DetectorConfig;
+import com.example.waf.detector.enums.Role;
 import com.example.waf.detector.model.DetectionResult;
 import com.example.waf.detector.model.Event;
 import com.example.waf.detector.model.RuleMatch;
+import com.example.waf.detector.model.RuleDefinition;
 import com.example.waf.detector.service.RuleEngineService;
 import com.example.waf.detector.util.EventMapper;
 import org.junit.jupiter.api.Test;
@@ -29,6 +31,14 @@ class DetectorCoreTest {
             new DetectorConfig.Ddos(10, 300, 20, 10, 1_000);
 
     @Test
+    void mapsNewAndLegacyNamesToD2Roles() {
+        assertEquals(Role.DETECTION, Role.from("detection"));
+        assertEquals(Role.DETECTION, Role.from("rules"));
+        assertEquals(Role.RULE_MANAGEMENT, Role.from("rule-management"));
+        assertEquals(Role.RULE_MANAGEMENT, Role.from("rule-api"));
+    }
+
+    @Test
     void detectsEncodedAndCommentObfuscatedAttacks() {
         RuleEngineService rules = new RuleEngineServiceImpl();
         assertType(rules.match(event("s1", "2026-10-04T08:00:00Z", "1", "/products",
@@ -47,6 +57,23 @@ class DetectorCoreTest {
         List<RuleMatch> matches = rules.match(event("1", "2026-10-04T08:00:00Z", "1",
                 "/union", "select", 200));
         assertTrue(matches.isEmpty());
+    }
+
+    @Test
+    void detectsAttackInHeader() {
+        Event event = new Event("header", "2026-10-04T08:00:00Z", "shop.example.test", "7",
+                "GET", "/", "", "", "test", 200,
+                Map.of("x-test", "<script>alert(1)</script>"));
+        assertType(new RuleEngineServiceImpl().match(event), "XSS");
+    }
+
+    @Test
+    void rejectsRegexFeaturesOutsideLinearTimeRe2() {
+        RuleDefinition rule = new RuleDefinition("BAD_BACKREF", "XSS", "unsafe", true,
+                List.of("body"), "(a)\\\\1", 50, List.of());
+        RuleDefinition lookahead = new RuleDefinition("BAD_LOOKAHEAD", "XSS", "unsafe", true,
+                List.of("body"), "a(?=b)", 50, List.of());
+        assertThrows(IllegalArgumentException.class, () -> new RuleValidationServiceImpl().validate(lookahead));
     }
 
     @Test

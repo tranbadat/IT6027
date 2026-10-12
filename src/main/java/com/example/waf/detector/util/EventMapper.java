@@ -6,6 +6,7 @@ import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Locale;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 public final class EventMapper {
@@ -34,7 +35,22 @@ public final class EventMapper {
             throw new IllegalArgumentException("status must be an integer from 100 to 599");
         return new Event(id, parsed.toString(), domain, ip, method, path,
                 field(data, "query", 8192, false), field(data, "body", 8192, false),
-                field(data, "user_agent", 2048, false), (int) code);
+                field(data, "user_agent", 2048, false), (int) code, headers(data));
+    }
+
+    private static Map<String, String> headers(Map<String, Object> data) {
+        Object raw = data.get("headers");
+        if (raw == null) return Map.of();
+        if (!(raw instanceof Map<?, ?> values) || values.size() > 100)
+            throw new IllegalArgumentException("headers must be an object with at most 100 entries");
+        Map<String, String> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : values.entrySet()) {
+            if (!(entry.getKey() instanceof String key) || !(entry.getValue() instanceof String value)
+                    || key.length() > 128 || value.length() > 4096)
+                throw new IllegalArgumentException("Invalid header");
+            result.put(key.toLowerCase(Locale.ROOT), value);
+        }
+        return result;
     }
 
     private static String field(Map<String, Object> data, String key, int maximum, boolean required) {

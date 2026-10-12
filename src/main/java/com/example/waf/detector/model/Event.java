@@ -7,7 +7,16 @@ import java.util.Map;
 
 public record Event(String eventId, String timestamp, String domain, String clientIp,
                     String method, String path, String query, String body,
-                    String userAgent, int status) {
+                    String userAgent, int status, Map<String, String> headers) {
+    public Event {
+        headers = headers == null ? Map.of() : Map.copyOf(headers);
+    }
+
+    public Event(String eventId, String timestamp, String domain, String clientIp,
+                 String method, String path, String query, String body,
+                 String userAgent, int status) {
+        this(eventId, timestamp, domain, clientIp, method, path, query, body, userAgent, status, Map.of());
+    }
     public String domainKey() {
         return domain.toLowerCase(Locale.ROOT);
     }
@@ -36,6 +45,7 @@ public record Event(String eventId, String timestamp, String domain, String clie
         data.put("body", body);
         data.put("user_agent", userAgent);
         data.put("status", status);
+        data.put("headers", headers);
         return data;
     }
 }

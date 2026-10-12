@@ -3,13 +3,17 @@ package com.example.waf.detector.config;
 import com.example.waf.detector.util.EnvironmentUtils;
 
 public record DetectorConfig(Request request, Ddos ddos, int maxFutureSkewSeconds) {
+
+    // Khai báo record Request
     public record Request(int windowSeconds, int requestThreshold, int errorThreshold,
                           int distinctPathThreshold, int alertThreshold,
                           int cooldownSeconds, int maxTrackedClients) {}
 
+    // Khai báo record DDOS
     public record Ddos(int windowSeconds, int requestThreshold, int uniqueIpThreshold,
                        int cooldownSeconds, int maxTrackedDomains) {}
 
+    // Load env
     public static DetectorConfig fromEnvironment() {
         Request request = new Request(
                 EnvironmentUtils.positiveInt("REQUEST_WINDOW_SECONDS", 60),

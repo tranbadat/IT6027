@@ -2,7 +2,10 @@ x-detector-environment: &detector-environment
   KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:19092}
   KAFKA_INPUT_TOPIC: ${KAFKA_INPUT_TOPIC:-web.requests.v1}
   KAFKA_DOMAIN_TOPIC: ${KAFKA_DOMAIN_TOPIC:-web.requests.by-domain.v1}
-  KAFKA_OUTPUT_TOPIC: ${KAFKA_OUTPUT_TOPIC:-security.detections.v1}
+  ATTACK_DETECTED_TOPIC: ${ATTACK_DETECTED_TOPIC:-attack.detected.v1}
+  ANOMALY_SCORED_TOPIC: ${ANOMALY_SCORED_TOPIC:-anomaly.scored.v1}
+  ALERT_TRIGGERED_TOPIC: ${ALERT_TRIGGERED_TOPIC:-alert.triggered.v1}
+  RULE_CHANGES_TOPIC: ${RULE_CHANGES_TOPIC:-rules.changed.v1}
   KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-security.invalid.v1}
   BATCH_SIZE: ${BATCH_SIZE:-200}
   REQUEST_WINDOW_SECONDS: ${REQUEST_WINDOW_SECONDS:-60}
@@ -30,6 +33,18 @@ x-detector-service: &detector-service
       condition: service_completed_successfully
 
 services:
+  kafka-volume-init:
+    image: ${KAFKA_IMAGE:-apache/kafka:4.1.0}
+    user: 0:0
+    restart: no
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        mkdir -p /tmp/kraft-combined-logs
+        chown -R 1000:1000 /tmp/kraft-combined-logs
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+
   kafka:
     image: ${KAFKA_IMAGE:-apache/kafka:4.1.0}
     hostname: kafka
@@ -54,8 +69,11 @@ services:
       CLUSTER_ID: ${KAFKA_CLUSTER_ID:-4L6g3nShT-eMCtK--X86sw}
     volumes:
       - kafka-data:/tmp/kraft-combined-logs
+    depends_on:
+      kafka-volume-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/19092' || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -72,7 +90,10 @@ services:
       - |
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic ${KAFKA_INPUT_TOPIC:-web.requests.v1} --partitions ${KAFKA_INPUT_PARTITIONS:-6} --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic ${KAFKA_DOMAIN_TOPIC:-web.requests.by-domain.v1} --partitions ${KAFKA_DOMAIN_PARTITIONS:-6} --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic ${KAFKA_OUTPUT_TOPIC:-security.detections.v1} --partitions ${KAFKA_OUTPUT_PARTITIONS:-6} --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic ${ATTACK_DETECTED_TOPIC:-attack.detected.v1} --partitions ${KAFKA_OUTPUT_PARTITIONS:-6} --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic ${ANOMALY_SCORED_TOPIC:-anomaly.scored.v1} --partitions ${KAFKA_OUTPUT_PARTITIONS:-6} --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic ${ALERT_TRIGGERED_TOPIC:-alert.triggered.v1} --partitions ${KAFKA_OUTPUT_PARTITIONS:-6} --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic ${RULE_CHANGES_TOPIC:-rules.changed.v1} --partitions 1 --replication-factor 1 --config cleanup.policy=compact
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic ${KAFKA_DLQ_TOPIC:-security.invalid.v1} --partitions ${KAFKA_DLQ_PARTITIONS:-3} --replication-factor 1
 
   kafka-ui:
@@ -91,11 +112,37 @@ services:
 
   detector:
     <<: *detector-service
-    command: ["java", "-jar", "/app/app.jar", "rules"]
+    command: ["java", "-jar", "/app/app.jar", "detection"]
     environment:
       <<: *detector-environment
       BATCH_SIZE: ${RULE_BATCH_SIZE:-200}
       KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-waf-detector-v2}
+
+  rules-volume-init:
+    image: waf-log-detector:${DETECTOR_IMAGE_TAG:-local}
+    user: 0:0
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["mkdir -p /data && chown -R 10001:10001 /data"]
+    volumes:
+      - rules-data:/data
+
+  rule-api:
+    <<: *detector-service
+    command: ["java", "-jar", "/app/app.jar", "rule-management"]
+    ports:
+      - "${RULE_API_PORT:-8090}:8090"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      rules-volume-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *detector-environment
+      RULE_API_PORT: 8090
+      RULE_STORE_PATH: /data/rules.json
+    volumes:
+      - rules-data:/data
 
   repartitioner:
     <<: *detector-service
@@ -139,3 +186,4 @@ services:
 
 volumes:
   kafka-data:
+  rules-data:
