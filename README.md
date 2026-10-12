@@ -65,7 +65,86 @@ D2.2 Rule API là control plane bên trong Detection Engine, không nằm trên 
 
 D2 không gọi trực tiếp mã nguồn của D1 hoặc D3. Khi phát triển chưa có D1, có thể dùng simulator phát event mẫu; khi chưa có D3, xem output bằng Kafka UI. Riêng D2.2 có thể chạy Kafka + `rule-api` để test CRUD. Repository nằm sau `RuleStoreService`, nên có thể thay JSON bằng PostgreSQL mà không đổi API hoặc D2.1.
 
-## Pipeline thực thi và class/method
+## Flow end-to-end và dẫn chứng trong code
+
+Flow hoàn chỉnh của hệ thống nhóm:
+
+```text
+Nginx/Apache
+  → D1 thu thập và chuẩn hóa access log
+  → Kafka: web.requests.v1
+  → D2 đọc event, kiểm tra schema, phát hiện và chấm điểm
+  → Kafka: attack.detected.v1 / anomaly.scored.v1 / alert.triggered.v1
+  → D3 đọc kết quả và lưu database
+  → Dashboard đọc database, Alerting gửi email/webhook
+```
+
+Repository này triển khai **D2 Detection Engine**. D1 và D3 là các project bên ngoài, tích hợp với D2 bằng Kafka contract.
+
+### Bước 1 — D1 thu thập và chuẩn hóa log
+
+D1 đọc access log Nginx/Apache, chuyển mỗi request thành JSON theo contract [`Event`](src/main/java/com/example/waf/detector/model/Event.java), dùng Kafka key `domain|client_ip` rồi gửi vào `web.requests.v1`.
+
+Code chứng minh phía D2 đã định nghĩa biên nhận dữ liệu:
+
+- [`Event.java`](src/main/java/com/example/waf/detector/model/Event.java): schema request chuẩn hóa và cách tạo `clientKey()`/`domainKey()`.
+- [`EventMapper.from()`](src/main/java/com/example/waf/detector/util/EventMapper.java): kiểm tra `event_id`, timestamp, domain, IP, method, path, status và headers.
+- [`KafkaPipeline`](src/main/java/com/example/waf/detector/kafka/KafkaPipeline.java): đọc biến `KAFKA_INPUT_TOPIC`, mặc định là `web.requests.v1`.
+- [`docker-compose.yml`](docker-compose.yml): tạo `web.requests.v1` với số partition cấu hình được.
+
+Project này không chứa collector production của D1. Service `simulator` chỉ thay D1 để kiểm thử độc lập.
+
+### Bước 2 — D2 phát hiện và chấm điểm
+
+Role `detection` thực thi tuần tự theo từng Kafka partition:
+
+1. [`App.main()`](src/main/java/com/example/waf/detector/App.java) chọn role `DETECTION`.
+2. [`KafkaPipeline.run()`](src/main/java/com/example/waf/detector/kafka/KafkaPipeline.java) poll Kafka theo batch và kiểm tra Kafka key.
+3. [`EventMapper.from()`](src/main/java/com/example/waf/detector/util/EventMapper.java) parse và validate event.
+4. [`RequestDetectionServiceImpl.analyze()`](src/main/java/com/example/waf/detector/service/impl/RequestDetectionServiceImpl.java) gọi Rule Engine, cập nhật cửa sổ hành vi và tính score/severity.
+5. [`RuleEngineServiceImpl.match()`](src/main/java/com/example/waf/detector/service/impl/RuleEngineServiceImpl.java) normalize rồi match RE2 trên URL, query, body và headers.
+6. [`DetectionResult.toMap()`](src/main/java/com/example/waf/detector/model/DetectionResult.java) tạo JSON kết quả.
+7. [`KafkaPipeline.run()`](src/main/java/com/example/waf/detector/kafka/KafkaPipeline.java) định tuyến kết quả:
+   - Có rule khớp → `attack.detected.v1`.
+   - Có kết quả chấm điểm → `anomaly.scored.v1`.
+   - `alert=true` → `alert.triggered.v1`.
+   - Event sai contract → `security.invalid.v1`.
+
+Offset đầu vào chỉ được commit sau khi Kafka xác nhận toàn bộ output của batch, nên pipeline có đặc tính at-least-once. D3 cần khử trùng theo `event_id` khi lưu database.
+
+### Nhánh DDoS
+
+Role `repartition` đọc `web.requests.v1`, đổi key sang domain và ghi `web.requests.by-domain.v1`. Role `ddos` đọc topic này và gọi [`DdosDetectionServiceImpl.analyze()`](src/main/java/com/example/waf/detector/service/impl/DdosDetectionServiceImpl.java). Khi vượt ngưỡng request và số IP khác nhau, kết quả được gửi vào `alert.triggered.v1`.
+
+### Luồng quản lý rule
+
+1. Quản trị viên gọi REST API trong [`RuleApiServer`](src/main/java/com/example/waf/detector/api/RuleApiServer.java).
+2. [`RuleValidationServiceImpl`](src/main/java/com/example/waf/detector/service/impl/RuleValidationServiceImpl.java) kiểm tra schema, target, score, normalizer và regex RE2.
+3. [`RuleStoreServiceImpl`](src/main/java/com/example/waf/detector/service/impl/RuleStoreServiceImpl.java) ghi snapshot vào `rules.json` bằng file tạm và atomic move.
+4. [`KafkaRuleChangePublisher.publish()`](src/main/java/com/example/waf/detector/kafka/KafkaRuleChangePublisher.java) gửi snapshot vào compacted topic `rules.changed.v1` với key `active`.
+5. [`RuleChangeSubscriber`](src/main/java/com/example/waf/detector/kafka/RuleChangeSubscriber.java) nhận snapshot và gọi `RuleEngineServiceImpl.replaceRules()` để hot reload.
+
+`rules.json` chỉ lưu cấu hình rule của D2.2, không lưu lịch sử phát hiện.
+
+### Bước 3 — D3 lưu kết quả vào database
+
+D3 tạo consumer group riêng để đọc:
+
+- `attack.detected.v1`: lịch sử request khớp rule.
+- `anomaly.scored.v1`: điểm, severity và tín hiệu cửa sổ.
+- `alert.triggered.v1`: cảnh báo cần gửi hoặc hiển thị.
+
+D3 lưu dữ liệu vào PostgreSQL, ClickHouse hoặc Elasticsearch, tùy nhu cầu truy vấn. Consumer D3 nên dùng `event_id` làm khóa duy nhất để xử lý output at-least-once.
+
+**Phần consumer và database kết quả chưa nằm trong repository này**; đây là contract đầu ra dành cho project Người 3. Bằng chứng phía D2 là tên topic được khai báo trong [`KafkaPipeline`](src/main/java/com/example/waf/detector/kafka/KafkaPipeline.java) và được tạo trong [`docker-compose.yml`](docker-compose.yml).
+
+### Bước 4 — Dashboard và gửi cảnh báo
+
+Dashboard của D3 truy vấn database hoặc dùng thêm consumer realtime để cập nhật biểu đồ. Alerting chỉ đọc `alert.triggered.v1` rồi gửi email/webhook theo scope domain/application.
+
+Repository hiện có Kafka UI để quan sát topic phục vụ phát triển. Kafka UI không thay thế dashboard nghiệp vụ, và project này chưa chứa code gửi email/webhook.
+
+## Pipeline thực thi nội bộ D2
 
 ```mermaid
 sequenceDiagram
