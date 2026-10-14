@@ -1,5 +1,5 @@
 # LOẠI 3 — Platform / Hub trung tâm (Người 3): quản trị & kết quả sau xử lý.
-# Gồm backbone dùng chung (RabbitMQ + Postgres) + P1..P5 + gateway.
+# Gồm backbone dùng chung (Kafka + Postgres) + P1..P5 + gateway.
 # Dựng 1 lần cho cả hệ thống. Pipeline (Loại 2) và Sensor (Loại 1) trỏ về đây.
 #
 # Chạy:  docker network create waf-net   (một lần, hoặc `make net` ở gốc repo)
@@ -13,8 +13,7 @@ x-logging: &logging
 
 x-svc-env: &svc-env
   LOG_LEVEL: ${LOG_LEVEL:-info}
-  EVENT_BUS_URL: amqp://${RABBITMQ_USER:?set RABBITMQ_USER}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}@rabbitmq:5672/
-  EVENT_EXCHANGE: waf.events
+  EVENT_BUS_URL: kafka:19092
   DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-waf}
   SCOPE_SERVICE_URL: http://p1-scope:8000
   AUTH_SERVICE_URL: http://p2-auth:8000
@@ -25,7 +24,7 @@ x-svc: &svc
   logging: *logging
   networks: [waf-net]
   depends_on:
-    rabbitmq: { condition: service_healthy }
+    kafka-init: { condition: service_completed_successfully }
     postgres: { condition: service_healthy }
 
 x-nginx-healthcheck: &nginx-healthcheck
@@ -35,31 +34,67 @@ x-nginx-healthcheck: &nginx-healthcheck
   retries: 3
 
 services:
-  rabbitmq:
-    image: rabbitmq:4.1-management-alpine
-    hostname: rabbitmq
+  # Event bus Kafka (KRaft, một node). Stack khác trên cùng máy nối qua waf-net: kafka:19092.
+  # Máy khác nối qua listener EXTERNAL (${KAFKA_EXTERNAL_HOST}:${KAFKA_EXTERNAL_PORT}), mặc định chỉ
+  # bind 127.0.0.1 vì PLAINTEXT không có xác thực — mở ra mạng ngoài phải có firewall hoặc SASL/TLS.
+  kafka-volume-init:
+    image: ${KAFKA_IMAGE:-apache/kafka:4.1.0}
+    user: "0:0"
+    restart: "no"
+    networks: [waf-net]
+    entrypoint: ["/bin/sh", "-ec", "mkdir -p /var/lib/kafka/data && chown -R 1000:1000 /var/lib/kafka/data"]
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  kafka:
+    image: ${KAFKA_IMAGE:-apache/kafka:4.1.0}
+    hostname: kafka
     restart: unless-stopped
     logging: *logging
     networks: [waf-net]
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     ports:
-      - "${RABBITMQ_AMQP_PORT:-5672}:5672"   # mở cho Sensor/Pipeline ở máy khác kết nối
-      - "127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"
+      - "${KAFKA_EXTERNAL_BIND:-127.0.0.1}:${KAFKA_EXTERNAL_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: CONTROLLER://:29093,PLAINTEXT://:19092,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,EXTERNAL://${KAFKA_EXTERNAL_HOST:-localhost}:${KAFKA_EXTERNAL_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-4L6g3nShT-eMCtK--X86sw}
     volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-      - ../../infra/rabbitmq:/etc/rabbitmq/waf:ro
-      - ../../infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
-    post_start:
-      - command: ["sh", "/etc/rabbitmq/waf/load-topology.sh", "--boot"]
-        user: rabbitmq
+      - kafka-data:/var/lib/kafka/data
+    depends_on:
+      kafka-volume-init: { condition: service_completed_successfully }
     healthcheck:
-      test: ["CMD-SHELL", "test -f /tmp/topology-ready && rabbitmq-diagnostics -q check_port_connectivity"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
       interval: 10s
       timeout: 10s
       retries: 12
       start_period: 20s
+
+  kafka-init:
+    image: ${KAFKA_IMAGE:-apache/kafka:4.1.0}
+    restart: "no"
+    networks: [waf-net]
+    entrypoint: ["/bin/bash", "/opt/waf/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    volumes:
+      - ../../infra/kafka/create-topics.sh:/opt/waf/create-topics.sh:ro
+    depends_on:
+      kafka: { condition: service_healthy }
 
   postgres:
     image: postgres:17-alpine
@@ -112,7 +147,6 @@ services:
     image: waf/p3-orchestrator:dev
     environment:
       <<: *svc-env
-      EVENT_QUEUE: q.p3-orchestrator
       PIPELINES_DIR: /config/pipelines
     volumes:
       - ../../config/pipelines:/config/pipelines:ro
@@ -122,7 +156,6 @@ services:
     image: waf/p4-alerting:dev
     environment:
       <<: *svc-env
-      EVENT_QUEUE: q.p4-alerting
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       ALERT_EMAIL_FROM: waf-alerts@waf.local
@@ -134,7 +167,6 @@ services:
     image: waf/p5-dashboard:dev
     environment:
       <<: *svc-env
-      EVENT_QUEUE: q.p5-dashboard
 
   gateway:
     image: nginx:1.28-alpine
@@ -146,7 +178,7 @@ services:
     environment:
       AUTH_SERVICE_URL: http://p2-auth:8000
       SCOPE_SERVICE_URL: http://p1-scope:8000
-      RULES_SERVICE_URL: ${RULES_SERVICE_URL:-http://d2-rule-manager:8000}   # ở stack Pipeline
+      RULES_SERVICE_URL: ${RULES_SERVICE_URL:-http://rule-api:8090}   # Rule API của detector, ở stack Pipeline
       PIPELINE_SERVICE_URL: http://p3-orchestrator:8000
       ALERTING_SERVICE_URL: http://p4-alerting:8000
       DASHBOARD_SERVICE_URL: http://p5-dashboard:8000
@@ -188,5 +220,5 @@ networks:
     name: waf-net
 
 volumes:
-  rabbitmq-data:
+  kafka-data:
   postgres-data:

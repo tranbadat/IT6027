@@ -76,6 +76,43 @@ def test_cooldown_disabled_when_zero():
     assert cooldown.allow(key) is True
 
 
+class _FakeStore:
+    def __init__(self, alerts):
+        self._alerts = alerts
+
+    def snapshot_counters(self):
+        return {"alerts": len(self._alerts)}
+
+    def recent_alerts(self, limit):
+        return self._alerts[:limit]
+
+
+class _FakeRepo:
+    def recent(self, limit, domain=None):
+        return [{"event_id": "a1"}]
+
+    def count(self):
+        return 42
+
+
+def test_alerts_api_reports_persisted_total_from_db():
+    from fastapi.testclient import TestClient
+    import app as app_mod
+    client = TestClient(app_mod.create_app(_FakeStore([]), _FakeRepo()))
+    body = client.get("/alerts?limit=1").json()
+    assert body["count"] == 42, body       # tổng trong DB, không bị đặt lại khi P4/P5 khởi động lại
+    assert body["persisted"] is True, body
+
+
+def test_alerts_api_falls_back_to_memory_count_without_db():
+    from fastapi.testclient import TestClient
+    import app as app_mod
+    client = TestClient(app_mod.create_app(_FakeStore([{"event_id": "x"}, {"event_id": "y"}]), None))
+    body = client.get("/alerts?limit=1").json()
+    assert body["count"] == 2, body
+    assert body["persisted"] is False, body
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

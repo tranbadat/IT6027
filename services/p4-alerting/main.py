@@ -1,6 +1,6 @@
 """P4 — Alerting.
 
-Consume q.p4-alerting (anomaly.scored + alert.triggered) ở thread nền, phục vụ HTTP
+Consume topic anomaly.scored + alert.triggered ở thread nền, phục vụ HTTP
 (/healthz, /alerts) ở thread chính. Trên alert.triggered: gửi email + webhook, có
 dedup/cooldown. Trên anomaly.scored: chỉ ghi nhận. KHÔNG tự chặn IP / đổi cấu hình.
 """
@@ -48,7 +48,7 @@ def _init_repo():
 def main() -> None:
     log.set_service(SOURCE)
 
-    queue = config.env("EVENT_QUEUE", "q.p4-alerting")
+    group = config.env("EVENT_GROUP", SOURCE)
     bus_url = config.env("EVENT_BUS_URL", required=True)
     webhook_url = config.env("ALERT_WEBHOOK_URL", "")
     cooldown_seconds = config.env_int("ALERT_COOLDOWN_SECONDS", _DEFAULT_COOLDOWN_SECONDS)
@@ -60,9 +60,9 @@ def main() -> None:
     repo = _init_repo()
 
     handler = consumer_mod.build_handler(store, cooldown, thresholds, smtp_cfg, webhook_url, repo)
-    consumer_mod.start_consumer_thread(bus_url, queue, handler)
+    consumer_mod.start_consumer_thread(bus_url, group, handler)
 
-    log.info("p4-alerting http starting", queue=queue, cooldown_seconds=cooldown_seconds,
+    log.info("p4-alerting http starting", group=group, cooldown_seconds=cooldown_seconds,
              thresholds=len(thresholds), webhook=bool(webhook_url), persist=bool(repo))
     app = app_mod.create_app(store, repo)
     uvicorn.run(app, host="0.0.0.0", port=config.env_int("HTTP_PORT", 8000), access_log=False)

@@ -11,6 +11,7 @@ from common import scope as scope_mod
 import parser as parser_mod
 
 SOURCE = "c2-parser"
+TOPICS = ["log.raw.ingested"]
 
 
 def build_handler(bus: bus_mod.EventBus, scope: scope_mod.ScopeClient):
@@ -42,11 +43,11 @@ def build_handler(bus: bus_mod.EventBus, scope: scope_mod.ScopeClient):
 def main() -> None:
     log.set_service(SOURCE)
     health.start_heartbeat()
-    queue = config.env("EVENT_QUEUE", "q.c2-parser")
+    group = config.env("EVENT_GROUP", SOURCE)
     bus = bus_mod.EventBus(config.env("EVENT_BUS_URL", required=True), source=SOURCE).connect()
     scope = scope_mod.ScopeClient(config.env("SCOPE_SERVICE_URL", required=True))
-    log.info("c2-parser started", queue=queue)
-    bus.consume(queue, build_handler(bus, scope))
+    log.info("c2-parser started", group=group, topics=TOPICS)
+    bus.consume(group, build_handler(bus, scope), topics=TOPICS)
 
 
 if __name__ == "__main__":

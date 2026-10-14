@@ -11,10 +11,9 @@ import json
 import os
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 _INDEX_PATH = os.path.join(os.path.dirname(__file__), "index.html")
-_RULES_PATH = os.path.join(os.path.dirname(__file__), "rules.html")
 # Khoảng thời gian gửi comment keep-alive khi không có event (giữ kết nối SSE sống).
 _KEEPALIVE_SECONDS = 15
 
@@ -55,7 +54,6 @@ def _load_html(path: str) -> str:
 def create_app(store, hub, repo=None) -> FastAPI:
     app = FastAPI(title="P5 Dashboard Service", version="0.1.0")
     index_html = _load_index_html()
-    rules_html = _load_html(_RULES_PATH)
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -65,10 +63,10 @@ def create_app(store, hub, repo=None) -> FastAPI:
     def index() -> HTMLResponse:
         return HTMLResponse(content=index_html)
 
-    # Trang quản trị rule (gateway map "/" -> P5; gọi API D2 qua /api/rules/*).
-    @app.get("/rules", response_class=HTMLResponse)
-    def rules_admin() -> HTMLResponse:
-        return HTMLResponse(content=rules_html)
+    # Quản trị rule nằm trong SPA (view "Rule pattern", gọi Rule API qua /api/rules/*).
+    @app.get("/rules")
+    def rules_admin() -> RedirectResponse:
+        return RedirectResponse(url="/#rules", status_code=307)
 
     @app.get("/dashboard/summary")
     def summary() -> dict:

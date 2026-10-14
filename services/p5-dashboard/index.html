@@ -68,6 +68,10 @@
     .tablewrap{max-height:460px;overflow:auto;border:1px solid var(--line);border-radius:10px}
     .empty{color:#9AA3B0;padding:16px;text-align:center}
     .tag{padding:2px 8px;border-radius:999px;font-size:11px;background:#EEF0F3;color:var(--muted);white-space:nowrap}
+    td .tag{display:inline-block;margin:1px 3px 1px 0}
+    .checks{display:flex;flex-wrap:wrap;gap:4px 14px;margin:2px 0 6px}
+    .checks label,.chk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--ink);margin:0}
+    .checks input{width:auto;margin:0}
     .sev{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
     .sev.critical,.sev.high{background:var(--danger-soft);color:var(--danger)}
     .sev.medium{background:var(--warn-soft);color:var(--warn)} .sev.low{background:var(--ok-soft);color:var(--ok)}
@@ -76,7 +80,7 @@
     .bar{display:flex;align-items:center;gap:10px;margin:8px 0}
     .bar .lbl{width:130px;color:var(--ink);font-size:12px;text-transform:capitalize}
     .bar .track{flex:1;background:#EEF1F5;border-radius:6px;height:12px;overflow:hidden}
-    .bar .fill{height:100%;background:var(--primary);border-radius:6px}
+    .bar .fill{display:block;height:100%;background:var(--primary);border-radius:6px}
     .bar .n{width:44px;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}
 
     label{display:block;font-size:12px;color:var(--muted);margin:12px 0 3px}
@@ -200,10 +204,10 @@
       <section data-view="rules">
         <div class="grid split">
           <div class="panel">
-            <div class="panelhead"><h2>Rule (D2) — <span id="rule-count">0</span></h2><button class="btn ghost sm" id="r-new">+ Thêm rule</button></div>
+            <div class="panelhead"><h2>Rule (detector) — <span id="rule-count">0</span></h2><button class="btn ghost sm" id="r-new">+ Thêm rule</button></div>
             <div style="margin-bottom:8px"><input id="r-filter" placeholder="Lọc theo id / loại / tên…"></div>
             <div class="tablewrap">
-              <table><thead><tr><th>Tên rule</th><th>Danh mục</th><th>Pattern</th><th>Mức độ</th></tr></thead>
+              <table><thead><tr><th>Rule</th><th>Danh mục</th><th>Pattern</th><th>Điểm</th></tr></thead>
               <tbody id="rules-body"><tr><td colspan="4" class="empty">Đang tải…</td></tr></tbody></table>
             </div>
           </div>
@@ -211,8 +215,8 @@
             <h2 id="rule-form-title">CHI TIẾT RULE</h2>
             <form id="rule-form" autocomplete="off">
               <div class="row">
-                <div><label>ID</label><input id="ru-id" placeholder="sqli-custom-1" required></div>
-                <div><label>Tên</label><input id="ru-name" placeholder="Mô tả ngắn" required></div>
+                <div><label>ID</label><input id="ru-id" placeholder="SQLI_CUSTOM_1" pattern="[A-Z0-9_]{3,80}" title="Chữ in hoa, số, dấu _ (3–80 ký tự)" required></div>
+                <div><label>Mô tả</label><input id="ru-name" placeholder="Mô tả ngắn" required></div>
               </div>
               <div class="row">
                 <div><label>Danh mục</label><select id="ru-type">
@@ -220,14 +224,15 @@
                   <option>command_injection</option><option>lfi</option><option>rfi</option>
                   <option>sensitive_file</option><option>log4shell</option><option>ssti</option><option>scanner</option>
                 </select></div>
-                <div><label>Mức độ</label><select id="ru-sev"><option>low</option><option selected>medium</option><option>high</option><option>critical</option></select></div>
+                <div><label>Điểm 1–100 (<span id="ru-sev">medium</span>)</label><input id="ru-score" type="number" min="1" max="100" value="65" required></div>
               </div>
-              <label>Target (trường khớp)</label>
-              <select id="ru-target"><option>any</option><option>path_decoded</option><option>query_decoded</option><option>path</option><option>query_string</option><option>user_agent</option><option>referer</option><option>url_decoded</option></select>
-              <label>Pattern (regex)</label>
+              <label>Trường khớp</label>
+              <div class="checks" id="ru-targets"></div>
+              <label>Chuẩn hoá trước khi khớp</label>
+              <div class="checks" id="ru-norms"></div>
+              <div class="checks"><label><input type="checkbox" id="ru-enabled" checked> Bật rule</label></div>
+              <label>Pattern (RE2: không lookaround, không backreference)</label>
               <textarea id="ru-pattern" placeholder="(?i)union\s+select" required></textarea>
-              <label>Mô tả</label>
-              <input id="ru-desc" placeholder="(tuỳ chọn)">
               <div class="actions">
                 <button type="submit" class="btn primary" id="ru-submit">Lưu rule</button>
                 <button type="button" class="btn ghost" id="ru-validate">Kiểm tra pattern</button>
@@ -284,11 +289,11 @@
     /* ---------- sự kiện bảo mật -> hàng bảng ---------- */
     function eventRow(it,withKind){
       const d=it.data||{};
-      const type=d.attack_type||(d.attack_types||[]).join(", ")||"";
+      const types=d.attack_type?[d.attack_type]:(d.attack_types||[]);
       const rule=d.rule_id||(d.rule_ids||[]).join(", ")||"";
       const sev=d.severity||"";
       return "<td>"+esc((it.timestamp||"").slice(11,19))+"</td><td>"+esc(it.domain||"")+"</td><td>"+esc(d.src_ip||"")+"</td>"
-        +'<td><span class="tag">'+esc(type)+'</span></td><td><code>'+esc(rule)+"</code></td>"
+        +'<td>'+types.map(t=>'<span class="tag">'+esc(t)+"</span>").join("")+'</td><td><code>'+esc(rule)+"</code></td>"
         +'<td>'+(sev?'<span class="sev '+esc(sev)+'">'+esc(sev)+"</span>":"")+"</td>"
         +(withKind?('<td>'+(d.score!=null?esc(d.score)+(d.threshold!=null?" / "+esc(d.threshold):""):"")+"</td>"
           +'<td><code>'+esc(d.url||"")+'</code></td><td><span class="tag">'+esc(EVENT_LABEL[it.event]||it.event)+"</span></td>"):"");
@@ -332,8 +337,8 @@
         (s.recent||[]).filter(e=>SEC_EVENTS.has(e.event)).slice().reverse().forEach(e=>{if(!events.length)pushEvent(e);});
       }catch(e){}
       try{$("s-attacks").textContent=(await (await api("/api/dashboard/attacks?limit=1")).json()).count??"0";}catch(e){}
-      try{$("s-alerts").textContent=((await (await api("/api/alerts/?limit=1")).json()).counters||{}).alerts??"0";}catch(e){}
-      try{const rl=await (await api("/api/rules/")).json();$("s-rules").textContent=rl.count??"0";}catch(e){}
+      try{const al=await (await api("/api/alerts/?limit=1")).json();$("s-alerts").textContent=al.count??(al.counters||{}).alerts??"0";}catch(e){}
+      try{const rl=await (await api("/api/rules/")).json();$("s-rules").textContent=(rl.rules||[]).filter(r=>r.enabled).length;}catch(e){}
       renderEventTables();
     }
 
@@ -384,47 +389,58 @@
     /* ---------- rules (master-detail) ---------- */
     let rulesCache={},ruleList=[],editing=null;
     function ruleMsg(t,ok){const m=$("ru-msg");m.textContent=t;m.className="msg show "+(ok?"ok":"err");}
+    const RULE_TARGETS=["url","query","headers","user_agent","referer","body"],RULE_NORMS=["url_decode","html_decode","sql_canonical"];
+    function sevOf(score){return score>=90?"critical":score>=70?"high":score>=40?"medium":"low";}
+    function renderChecks(id,values,selected){$(id).innerHTML=values.map(v=>'<label><input type="checkbox" value="'+v+'"'+(selected.includes(v)?" checked":"")+"> "+v+"</label>").join("");}
+    function checkedValues(id){return [...document.querySelectorAll("#"+id+" input:checked")].map(i=>i.value);}
+    function syncSev(){$("ru-sev").textContent=sevOf(Number($("ru-score").value)||0);}
     function ruleNew(){editing=null;$("rule-form-title").textContent="THÊM RULE";$("rule-form").reset();$("ru-id").readOnly=false;
+      renderChecks("ru-targets",RULE_TARGETS,["url","query","headers"]);renderChecks("ru-norms",RULE_NORMS,["url_decode","html_decode"]);syncSev();
       $("ru-submit").textContent="Lưu rule";$("ru-delete").hidden=true;$("ru-msg").className="msg";
       document.querySelectorAll("#rules-body tr").forEach(t=>t.classList.remove("sel"));}
     function ruleSelect(id){const r=rulesCache[id];if(!r)return;editing=id;$("rule-form-title").textContent="CHI TIẾT RULE";
-      $("ru-id").value=r.id;$("ru-id").readOnly=true;$("ru-name").value=r.name||"";$("ru-type").value=r.attack_type;$("ru-sev").value=r.severity;
-      $("ru-target").value=r.target;$("ru-pattern").value=r.pattern;$("ru-desc").value=r.description||"";
+      $("ru-id").value=r.id;$("ru-id").readOnly=true;$("ru-name").value=r.description||"";$("ru-type").value=r.group;
+      $("ru-score").value=r.score;$("ru-enabled").checked=!!r.enabled;$("ru-pattern").value=r.pattern;
+      renderChecks("ru-targets",RULE_TARGETS,r.targets||[]);renderChecks("ru-norms",RULE_NORMS,r.normalizers||[]);syncSev();
       $("ru-submit").textContent="Cập nhật";$("ru-delete").hidden=false;$("ru-msg").className="msg";
       document.querySelectorAll("#rules-body tr").forEach(t=>t.classList.toggle("sel",t.dataset.id===id));}
     function renderRules(items){const b=$("rules-body");
-      b.innerHTML=items.length?items.map(r=>'<tr class="clickable" data-id="'+esc(r.id)+'"><td><b>'+esc(r.name)+"</b>"
-        +'<div style="color:var(--muted);font-size:11px"><code>'+esc(r.id)+"</code></div></td>"
-        +'<td><span class="tag">'+esc(r.attack_type)+'</span></td><td><code>'+esc((r.pattern||"").slice(0,26))+"</code></td>"
-        +'<td><span class="sev '+esc(r.severity)+'">'+esc(r.severity)+"</span></td></tr>").join(""):'<tr><td colspan="4" class="empty">Không có.</td></tr>';
+      b.innerHTML=items.length?items.map(r=>'<tr class="clickable" data-id="'+esc(r.id)+'"><td><b>'+esc(r.description)+"</b>"
+        +'<div style="color:var(--muted);font-size:11px"><code>'+esc(r.id)+"</code>"+(r.enabled?"":' <span class="tag">tắt</span>')+"</div></td>"
+        +'<td><span class="tag">'+esc(r.group)+'</span></td><td><code>'+esc((r.pattern||"").slice(0,26))+"</code></td>"
+        +'<td><span class="sev '+esc(sevOf(r.score))+'">'+esc(r.score)+"</span></td></tr>").join(""):'<tr><td colspan="4" class="empty">Không có.</td></tr>';
       b.querySelectorAll("tr.clickable").forEach(tr=>tr.addEventListener("click",()=>ruleSelect(tr.dataset.id)));}
-    async function loadRules(){try{const items=((await (await api("/api/rules/")).json()).items)||[];
+    async function loadRules(){try{const items=((await (await api("/api/rules/")).json()).rules)||[];
       ruleList=items;rulesCache=Object.fromEntries(items.map(r=>[r.id,r]));$("rule-count").textContent=items.length;renderRules(items);
     }catch(e){$("rules-body").innerHTML='<tr><td colspan="4" class="empty">Lỗi tải.</td></tr>';}}
     $("r-filter").addEventListener("input",e=>{const q=e.target.value.toLowerCase();
-      renderRules(ruleList.filter(r=>(r.id+" "+r.name+" "+r.attack_type).toLowerCase().includes(q)));});
-    function ruleForm(){return{id:$("ru-id").value.trim(),name:$("ru-name").value.trim(),attack_type:$("ru-type").value,
-      severity:$("ru-sev").value,target:$("ru-target").value,pattern:$("ru-pattern").value,description:$("ru-desc").value.trim()};}
+      renderRules(ruleList.filter(r=>(r.id+" "+r.description+" "+r.group).toLowerCase().includes(q)));});
+    $("ru-score").addEventListener("input",syncSev);
+    function ruleForm(){return{id:$("ru-id").value.trim(),group:$("ru-type").value,description:$("ru-name").value.trim(),
+      enabled:$("ru-enabled").checked,targets:checkedValues("ru-targets"),pattern:$("ru-pattern").value,
+      score:Number($("ru-score").value),normalizers:checkedValues("ru-norms")};}
     async function submitRule(vOnly){const rule=ruleForm();let path="/api/rules/",method="POST";
       if(vOnly)path="/api/rules/validate";else if(editing){path="/api/rules/"+encodeURIComponent(editing);method="PUT";}
       const r=await api(path,{method,body:JSON.stringify(rule)});const j=await r.json().catch(()=>null);
-      if(r.ok){ruleMsg(vOnly?"Pattern hợp lệ ✓":(editing?"Đã cập nhật ✓ (D1 nạp lại ~5s)":"Đã thêm ✓ (D1 nạp lại ~5s)"),true);if(!vOnly){ruleNew();loadRules();}}
-      else{const err=j&&(Array.isArray(j.errors)?j.errors.join("; "):j.message)||"Lỗi";ruleMsg("Không lưu được ("+r.status+"): "+err,false);}}
+      if(r.ok){ruleMsg(vOnly?"Rule hợp lệ ✓":(editing?"Đã cập nhật ✓ (detector nạp lại qua topic rules.changed)":"Đã thêm ✓ (detector nạp lại qua topic rules.changed)"),true);if(!vOnly){ruleNew();loadRules();}}
+      else{ruleMsg("Không lưu được ("+r.status+"): "+((j&&(j.error||j.message))||"Lỗi"),false);}}
     $("rule-form").addEventListener("submit",e=>{e.preventDefault();submitRule(false);});
     $("ru-validate").addEventListener("click",()=>submitRule(true));
     $("r-new").addEventListener("click",ruleNew);
     $("ru-delete").addEventListener("click",async ()=>{if(!editing||!confirm("Xoá rule '"+editing+"'?"))return;
-      const r=await api("/api/rules/"+encodeURIComponent(editing),{method:"DELETE"});if(r.ok){ruleNew();loadRules();}});
+      const r=await api("/api/rules/"+encodeURIComponent(editing),{method:"DELETE"});
+      if(r.ok){ruleNew();loadRules();ruleMsg("Đã xoá ✓",true);}
+      else{const j=await r.json().catch(()=>null);ruleMsg("Không xoá được ("+r.status+"): "+((j&&(j.error||j.message))||"Lỗi"),false);}});
 
     /* ---------- settings ---------- */
     function loadSettings(){const h=location.hostname;
       const L=[["Grafana (metrics + logs + SOC)","http://"+h+":3000"],["Prometheus","http://"+h+":9090"],
-        ["Mailpit (email cảnh báo)","http://"+h+":8025"],["RabbitMQ UI","http://"+h+":15672"],["Swagger (OpenAPI)","http://"+h+":8090"]];
+        ["Mailpit (email cảnh báo)","http://"+h+":8025"],["Kafka UI (profile tools)","http://"+h+":8085"],["Swagger (OpenAPI)","http://"+h+":8090"]];
       $("links").innerHTML=L.map(([n,u])=>'<div class="linkcard"><span>'+esc(n)+'</span><a href="'+u+'" target="_blank" rel="noopener">'+esc(u)+" ↗</a></div>").join("");}
 
     const LOADERS={overview:loadOverview,realtime:renderEventTables,history:()=>{},domains:loadDomains,rules:loadRules,settings:loadSettings};
 
-    (async function init(){await getToken();connectStream();show(location.hash.slice(1)||"overview");loadOverview();
+    (async function init(){ruleNew();await getToken();connectStream();show(location.hash.slice(1)||"overview");loadOverview();
       setInterval(()=>{if((location.hash.slice(1)||"overview")==="overview")loadOverview();},POLL_MS);})();
   </script>
 </body>

@@ -1,6 +1,6 @@
 """Tail kiểu poll cho các file access log của Nginx/Apache.
 
-Tách riêng khỏi main để unit test không cần RabbitMQ. Theo dõi mỗi file bằng
+Tách riêng khỏi main để unit test không cần Kafka. Theo dõi mỗi file bằng
 (inode, offset) và một buffer bytes cho phần dòng chưa hoàn chỉnh; chỉ phát ra
 dòng đã kết thúc bằng '\\n'. Xử lý log rotation và truncation.
 """

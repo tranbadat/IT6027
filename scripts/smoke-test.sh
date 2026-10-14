@@ -21,7 +21,6 @@ done < .env
 GATEWAY="http://127.0.0.1:${GATEWAY_PORT:-8080}"
 WEB_NGINX="http://127.0.0.1:${WEB_NGINX_PORT:-8081}"
 WEB_APACHE="http://127.0.0.1:${WEB_APACHE_PORT:-8082}"
-RABBIT_API="http://127.0.0.1:${RABBITMQ_UI_PORT:-15672}/api"
 MAILPIT="http://127.0.0.1:${MAILPIT_UI_PORT:-8025}"
 MOCK_API="http://127.0.0.1:${MOCK_API_PORT:-4010}"
 WEBHOOK_SINK="http://127.0.0.1:${WEBHOOK_SINK_PORT:-4020}"
@@ -58,8 +57,10 @@ http_status() {
   curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"
 }
 
-rabbit() {
-  curl -sS --max-time 5 -u "${RABBITMQ_USER}:${RABBITMQ_PASSWORD}" -H 'content-type: application/json' "$@"
+# kafka_cli <script> [tham số...]: chạy công cụ dòng lệnh của Kafka trong container broker.
+kafka_cli() {
+  local tool="$1"; shift
+  docker compose exec -T kafka "/opt/kafka/bin/$tool" --bootstrap-server localhost:19092 "$@"
 }
 
 # log_contains <service> <file> <chuỗi>
@@ -70,7 +71,7 @@ log_contains() {
 check_containers() {
   section "Container"
   local svc
-  for svc in web-nginx rabbitmq postgres gateway mailpit; do
+  for svc in web-nginx kafka postgres gateway mailpit; do
     expect "$svc healthy" "$(container_state "$svc")" "healthy"
   done
 }
@@ -120,37 +121,28 @@ check_web_apache() {
 }
 
 check_event_bus() {
-  section "Event bus (RabbitMQ)"
-  expect "exchange waf.events là topic" \
-    "$(rabbit "$RABBIT_API/exchanges/%2F/waf.events" | jq -r '.type')" "topic"
+  section "Event bus (Kafka)"
+  local topics topic missing=""
+  topics="$(kafka_cli kafka-topics.sh --list 2>/dev/null)"
+  for topic in log.raw.ingested log.normalized log.enriched attack.detected anomaly.scored \
+               alert.triggered stage.completed rules.changed waf.deadletter; do
+    grep -qx "$topic" <<<"$topics" || missing="$missing $topic"
+  done
+  expect "đủ topic theo infra/kafka/create-topics.sh" "${missing:-ok}" "ok"
+  expect "rules.changed là topic compacted" \
+    "$(kafka_cli kafka-configs.sh --entity-type topics --entity-name rules.changed --describe 2>/dev/null \
+      | grep -o 'cleanup.policy=compact' | head -1)" "cleanup.policy=compact"
 
-  local expected actual
-  expected="$(jq -c '[.bindings[] | select(.source == "waf.events") | "\(.destination) \(.routing_key)"] | sort' infra/rabbitmq/definitions.json)"
-  actual="$(rabbit "$RABBIT_API/exchanges/%2F/waf.events/bindings/source" | jq -c '[.[] | "\(.destination) \(.routing_key)"] | sort')"
-  expect "binding khớp definitions.json" "$actual" "$expected"
-
-  expect "queue q.deadletter tồn tại" \
-    "$(rabbit "$RABBIT_API/queues/%2F/q.deadletter" | jq -r '.name')" "q.deadletter"
-
-  # Publish qua một queue tạm với routing key riêng để không làm bẩn queue thật.
-  local queue="smoke.${MARK}" routing_key="smoke.${MARK}" payload body
-  rabbit -o /dev/null -X PUT "$RABBIT_API/queues/%2F/${queue}" \
-    -d '{"durable":false,"auto_delete":false,"arguments":{"x-expires":60000}}'
-  rabbit -o /dev/null -X POST "$RABBIT_API/bindings/%2F/e/waf.events/q/${queue}" \
-    -d "{\"routing_key\":\"${routing_key}\"}"
-
+  # Gửi và đọc lại một message trên topic tạm để không làm bẩn topic thật.
+  local tmp="smoke.${MARK}" payload received
+  kafka_cli kafka-topics.sh --create --topic "$tmp" --partitions 1 --replication-factor 1 >/dev/null 2>&1
   payload="$(jq -c --arg id "$MARK" '.request_id = $id' contracts/events/examples/log.raw.ingested.json)"
-  body="$(jq -nc --arg rk "$routing_key" --arg p "$payload" \
-    '{routing_key:$rk, payload:$p, payload_encoding:"string", properties:{content_type:"application/json", delivery_mode:2}}')"
-  expect "publish được route" \
-    "$(rabbit -X POST "$RABBIT_API/exchanges/%2F/waf.events/publish" -d "$body" | jq -r '.routed')" "true"
-
-  expect "consume lại đúng event" \
-    "$(rabbit -X POST "$RABBIT_API/queues/%2F/${queue}/get" \
-        -d '{"count":1,"ackmode":"ack_requeue_false","encoding":"auto"}' \
-      | jq -r '.[0].payload | fromjson | .request_id')" "$MARK"
-
-  rabbit -o /dev/null -X DELETE "$RABBIT_API/queues/%2F/${queue}"
+  printf '%s\n' "$payload" | docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+    --bootstrap-server localhost:19092 --topic "$tmp" >/dev/null 2>&1
+  received="$(kafka_cli kafka-console-consumer.sh --topic "$tmp" --from-beginning \
+    --max-messages 1 --timeout-ms 10000 2>/dev/null | jq -r '.request_id' 2>/dev/null)"
+  expect "publish rồi consume lại đúng event" "$received" "$MARK"
+  kafka_cli kafka-topics.sh --delete --topic "$tmp" >/dev/null 2>&1 || true
 }
 
 check_postgres() {
@@ -195,8 +187,8 @@ check_gateway() {
     "$(curl -s --max-time 5 "${auth[@]}" "$GATEWAY/api/scope/check?app=shop-app" \
       | jq -r '[has("target"), has("target_type"), has("allowed"), has("reason"), has("cache_ttl_seconds")] | all')" "true"
 
-  if is_running d2-rule-manager; then
-    skip "route tới service chưa chạy → 502" "d2-rule-manager đang chạy"
+  if is_running rule-api; then
+    skip "route tới service chưa chạy → 502" "rule-api đang chạy"
   else
     expect "route tới service chưa chạy → 502 JSON" \
       "$(curl -s --max-time 10 "${auth[@]}" "$GATEWAY/api/rules/" | jq -r '.error')" "upstream_unavailable"

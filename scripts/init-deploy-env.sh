@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Sinh secret dùng chung và ghi .env cho cả 3 stack (platform/pipeline/sensor) sao cho
-# user/mật khẩu RabbitMQ KHỚP NHAU. Không ghi đè .env đã tồn tại.
+# Sinh secret và ghi .env cho các stack deploy (platform/pipeline/sensor/observability).
+# Pipeline/Sensor nối Kafka qua waf-net; Observability dùng lại mật khẩu role chỉ-đọc của
+# Platform để Grafana đọc DB. Không ghi đè .env đã tồn tại.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,25 +15,20 @@ fi
 # Nếu platform/.env đã có, TÁI SỬ DỤNG secret trong đó để pipeline/sensor khớp.
 platform_env="$DEPLOY/platform/.env"
 if [[ -f "$platform_env" ]]; then
-  rabbit_user="$(grep -E '^RABBITMQ_USER=' "$platform_env" | cut -d= -f2-)"
-  rabbit_pass="$(grep -E '^RABBITMQ_PASSWORD=' "$platform_env" | cut -d= -f2-)"
-  echo "platform/.env đã có — dùng lại secret RabbitMQ hiện tại."
+  echo "platform/.env đã có — dùng lại secret hiện tại."
 else
-  rabbit_user="waf"
-  rabbit_pass="$(openssl rand -hex 16)"
   postgres_pass="$(openssl rand -hex 16)"
   jwt_secret="$(openssl rand -hex 32)"
   grafana_db_pass="$(openssl rand -hex 16)"
   umask 077
-  sed -e "s/^RABBITMQ_PASSWORD=.*/RABBITMQ_PASSWORD=${rabbit_pass}/" \
-      -e "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${postgres_pass}/" \
+  sed -e "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${postgres_pass}/" \
       -e "s/^JWT_SECRET=.*/JWT_SECRET=${jwt_secret}/" \
       -e "s/^GRAFANA_DB_PASSWORD=.*/GRAFANA_DB_PASSWORD=${grafana_db_pass}/" \
       "$DEPLOY/platform/.env.example" > "$platform_env"
   echo "Đã tạo deploy/platform/.env"
 fi
 
-bus_url="amqp://${rabbit_user}:${rabbit_pass}@rabbitmq:5672/"
+bus_url="kafka:19092"
 
 # Đọc creds Postgres từ platform/.env để observability (Grafana) khớp khi query DB.
 pg_user="$(grep -E '^POSTGRES_USER=' "$platform_env" | cut -d= -f2-)"

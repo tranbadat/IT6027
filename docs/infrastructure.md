@@ -18,7 +18,7 @@ make smoke   # kiểm tra hạ tầng
 make help    # xem tất cả lệnh
 ```
 
-`.env` mặc định bật profile `mock,docs,app` (toàn bộ 11 service C1–P5) với Scope/Auth thật (P1/P2). Xem [`services/README.md`](../services/README.md) để chạy lẻ từng service theo profile.
+`.env` mặc định bật profile `mock,docs,app` (toàn bộ pipeline: C1–C3, detector, P1–P5) với Scope/Auth thật (P1/P2). Xem [`services/README.md`](../services/README.md) để chạy lẻ từng service theo profile.
 
 Sau khi chạy `make up`:
 
@@ -26,7 +26,7 @@ Sau khi chạy `make up`:
 |---|---|
 | http://localhost:8081 | Web mục tiêu Nginx (`shop.local`) |
 | http://localhost:8080 | API gateway (`/api/...`) và dashboard P5 (`/`) |
-| http://localhost:15672 | RabbitMQ UI (tài khoản `RABBITMQ_USER` / `RABBITMQ_PASSWORD` trong `.env`) |
+| http://localhost:8085 | Kafka UI xem message trong topic (profile `tools`) |
 | http://localhost:8025 | Mailpit: xem email cảnh báo P4 gửi |
 | http://localhost:8090 | Swagger UI: xem OpenAPI contract |
 
@@ -43,11 +43,11 @@ flowchart LR
   WA -. "volume apache-logs" .-> C1
 
   subgraph backend["network: backend (analyzer)"]
-    C1[c1-ingestion] --> MQ[("RabbitMQ<br/>exchange waf.events")]
+    C1[c1-ingestion] --> MQ[("Kafka<br/>topic = tên event")]
     MQ --> C2[c2-parser] --> MQ
     MQ --> C3[c3-enrichment] --> MQ
-    MQ --> D1[d1-rule-engine] --> MQ
-    MQ --> D3[d3-anomaly-scorer] --> MQ
+    MQ --> DET["detector (Java)<br/>D1 khớp rule + D3 chấm điểm"] --> MQ
+    RA["rule-api (Java, D2)"] -- "rules.changed" --> MQ
     MQ --> P3[p3-orchestrator]
     MQ --> P4[p4-alerting]
     MQ --> P5[p5-dashboard]
@@ -55,11 +55,11 @@ flowchart LR
     P4 --> WH[webhook-sink]
     GW[gateway] -- auth_request --> AUTH["p2-auth / mock-api"]
     GW --> SCOPE["p1-scope / mock-api"]
-    GW --> D2[d2-rule-manager]
+    GW --> RA
     GW --> P3
     GW --> P4
     GW --> P5
-    C1 & C2 & C3 & D1 & D3 -- "GET /scope/check" --> SCOPE
+    C1 & C2 & C3 & DET -- "GET /scope/check" --> SCOPE
     PG[("PostgreSQL")]
   end
 ```
@@ -74,29 +74,32 @@ flowchart LR
 |---|---|---|---|
 | `web-nginx` | nginx 1.28 | 8081 | Web mục tiêu, ghi access log cho `shop.local` và `internal.local` |
 | `web-apache` | httpd 2.4 (build tại `infra/web-apache`) | 8082 | Web mục tiêu Apache cho `blog.local`, profile `apache` |
-| `rabbitmq` | rabbitmq 4.1 + management | 5672, 15672 | Event bus |
+| `kafka` | apache/kafka 4.1 (KRaft) | 9092 | Event bus; topic tạo bởi `kafka-init` (`infra/kafka/create-topics.sh`) |
+| `kafka-ui` | kafbat/kafka-ui | 8085 | Xem topic và message, profile `tools` |
 | `postgres` | postgres 17 | 5432 | Lưu trữ; mỗi module một schema riêng |
 | `gateway` | nginx 1.28 | 8080 | Định tuyến `/api/*`, xác thực JWT qua P2, rate limit |
 | `mailpit` | mailpit | 8025 (UI), 1025 (SMTP) | Nhận email cảnh báo khi phát triển |
 | `mock-api` | nginx 1.28 | 4010 | Mock P1 Scope + P2 Auth, profile `mock` |
 | `webhook-sink` | http-https-echo | 4020 | Nhận webhook cảnh báo và in ra log, profile `mock` |
 | `swagger-ui` | swagger-ui | 8090 | Xem `contracts/openapi`, profile `docs` |
-| `c1-ingestion` … `p5-dashboard` | build từ `services/<tên>` | — | 11 service ứng dụng, mỗi service một profile (xem [services/README.md](../services/README.md)) |
+| `c1-ingestion` … `p5-dashboard`, `detector`, `rule-api` | build từ `services/<tên>` | — | Service ứng dụng (xem [services/README.md](../services/README.md)) |
 
 Muốn đổi cổng thì sửa các biến `*_PORT` trong `.env`.
 
 ## Profile
 
-Phần hạ tầng (`web-nginx`, `rabbitmq`, `postgres`, `gateway`, `mailpit`) luôn chạy. Các phần khác bật qua biến `COMPOSE_PROFILES` trong `.env`:
+Phần hạ tầng (`web-nginx`, `kafka`, `postgres`, `gateway`, `mailpit`) luôn chạy. Các phần khác bật qua biến `COMPOSE_PROFILES` trong `.env`:
 
 | Profile | Bật thêm |
 |---|---|
 | `mock` | `mock-api`, `webhook-sink` |
 | `docs` | `swagger-ui` |
 | `apache` | `web-apache` |
-| `c1` … `p5` | Từng service ứng dụng |
-| `collection` / `detection` / `platform` | Nhóm service của Người 1 / 2 / 3 |
-| `app` | Cả 11 service ứng dụng |
+| `c1` … `c3`, `p1` … `p5` | Từng service ứng dụng |
+| `collection` / `detection` / `platform` | Nhóm service của Người 1 / 2 / 3 (`detection` = `detector` + `rule-api`) |
+| `app` | Toàn bộ pipeline |
+| `ddos` | Nhánh DDoS của detector (`repartitioner`, `ddos-detector`) |
+| `tools` | `kafka-ui` |
 
 Ví dụ: Người 1 đã có C1 và C2 nhưng P1, P2 vẫn đang dùng mock:
 
@@ -141,17 +144,16 @@ Một số lệnh hỗ trợ:
 
 ## Event bus
 
-RabbitMQ dùng exchange topic `waf.events`, routing key trùng tên event. Mỗi consumer có một queue riêng `q.<tên-service>`. Consumer tự publish message lỗi sang `waf.events.dlx`, và các message này được gom vào `q.deadletter`. Chi tiết envelope, bảng event → queue và quy ước publish/consume: [contracts/events/README.md](../contracts/events/README.md).
+Kafka chạy một node ở chế độ KRaft. Mỗi event là một topic cùng tên, key message là `domain|src_ip`, mỗi service đọc bằng một consumer group riêng. Message lỗi được chuyển sang topic `waf.deadletter`. Chi tiết envelope, bảng event → consumer và quy ước publish/consume: [contracts/events/README.md](../contracts/events/README.md).
 
-Topology khai báo trong `infra/rabbitmq/definitions.json`:
+Topic khai báo trong `infra/kafka/create-topics.sh`:
 
-- Được nạp bởi hook `post_start` (script `infra/rabbitmq/load-topology.sh`) mỗi khi container `rabbitmq` được tạo hoặc khởi động. Container chỉ báo healthy sau khi nạp xong.
-- Nạp lại khi đang chạy: `make bus-topology`.
-- Xoá message tồn đọng: `make bus-purge`.
+- Được tạo bởi container `kafka-init` sau khi broker healthy; mọi service ứng dụng chờ bước này xong mới khởi động.
+- Broker tắt tự tạo topic, nên topic mới phải thêm vào script rồi chạy `make bus-topology`.
+- Xem message: `make bus-peek t=<topic>` hoặc Kafka UI (profile `tools`).
+- Xoá message tồn đọng: `make bus-purge` (xoá rồi tạo lại topic sự kiện, giữ `rules.changed`).
 
-Không nạp definitions lúc boot bằng cấu hình `definitions.local.path`, vì khi đó RabbitMQ bỏ qua việc tạo user mặc định từ `.env`.
-
-Service chạy ngoài Docker (trên máy host) có thể kết nối tới `amqp://<user>:<pass>@localhost:5672/`.
+Service chạy ngoài Docker (trên máy host) kết nối tới `localhost:9092`.
 
 ## API gateway
 
@@ -226,7 +228,7 @@ Script init chỉ chạy khi volume còn trống. Muốn chạy lại thì dùng
 
 | Thư mục host | Mount vào | Dùng cho |
 |---|---|---|
-| `config/rules/` | `/data/rules` (d1 chỉ đọc, d2 đọc–ghi) | File rule YAML/JSON |
+| volume `rules-data` | `/data/rules.json` (rule-api đọc–ghi) | Rule hiện hành; lần đầu được tạo từ `services/detector/src/main/resources/rules/default-rules.yaml` |
 | `config/pipelines/` | `/config/pipelines` (p3 chỉ đọc) | Cấu hình pipeline YAML |
 | `data/geoip/` | `/data/geoip` (c3 chỉ đọc) | GeoIP DB. Tải bằng `make geoip` (DB-IP Lite, giấy phép CC BY 4.0: khi hiển thị vị trí cần ghi "IP Geolocation by DB-IP") |
 
@@ -237,9 +239,9 @@ Thư mục `data/` không được commit.
 | Hiện tượng | Cách xử lý |
 |---|---|
 | `make up` báo trùng cổng | Đổi biến `*_PORT` tương ứng trong `.env` |
-| `post_start` không được hỗ trợ | Nâng cấp Docker Compose lên 2.30 trở lên |
-| `rabbitmq` không healthy | Chạy `make logs s=rabbitmq` |
-| `make bus-topology` báo `PRECONDITION_FAILED` | Đã đổi `arguments` của một queue đang tồn tại: xoá queue đó trên UI rồi chạy lại, hoặc `make clean` |
+| `kafka` không healthy | Chạy `make logs s=kafka`; lần đầu broker cần khoảng 20 giây |
+| Service báo `event bus not ready` | `kafka-init` chưa xong hoặc lỗi: `make logs s=kafka-init` |
+| Message vào `waf.deadletter` | `make bus-peek t=waf.deadletter`; header `error` ghi lý do |
 | Gateway trả `502 upstream_unavailable` | Service đích chưa chạy, hoặc biến `*_SERVICE_URL` sai |
 | Gateway trả `429` ở `/api/auth/token` | Chờ khoảng 1 phút (giới hạn 10 request/phút) |
 | Build lỗi `failed to read dockerfile` | Đã bật profile của một service chưa có `Dockerfile` |

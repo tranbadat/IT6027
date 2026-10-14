@@ -5,22 +5,22 @@ Hệ thống chia thành **3 loại hạ tầng** deploy riêng, nối nhau qua 
 | Loại | Stack | Thư mục | Thành phần | Deploy ở đâu |
 |---|---|---|---|---|
 | **1** | Sensor (thu thập) | `deploy/sensor` | C1 | **Mỗi app cần giám sát** (cạnh Nginx/Apache của app) |
-| **2** | Pipeline (xử lý) | `deploy/pipeline` | C2, C3, D1, D2, D3 | Trung tâm |
-| **3** | Platform (quản trị) | `deploy/platform` | RabbitMQ, Postgres, P1–P5, gateway, mailpit | Trung tâm (hub) |
+| **2** | Pipeline (xử lý) | `deploy/pipeline` | C2, C3, detector (D1 + D3), rule-api (D2), nhánh DDoS (profile `ddos`) | Trung tâm |
+| **3** | Platform (quản trị) | `deploy/platform` | Kafka, Postgres, P1–P5, gateway, mailpit | Trung tâm (hub) |
 
 ```
    App A ── Nginx ──┐                            ┌── Loại 3: PLATFORM (hub) ───────────┐
-   [Sensor C1] ─────┼──► RabbitMQ (bus) ◄────────┤ RabbitMQ  Postgres  gateway         │
+   [Sensor C1] ─────┼──► Kafka (bus) ◄───────────┤ Kafka     Postgres  gateway         │
                     │        ▲                    │ P1 scope  P2 auth  P3  P4  P5       │
    App B ── Nginx ──┤        │                    └─────────────────────────────────────┘
    [Sensor C1] ─────┘        │
                              │
-                    ┌── Loại 2: PIPELINE ──────────────────────┐
-                    │ C2 ─► C3 ─► D1 ─► D3   (+ D2 quản lý rule) │
-                    └───────────────────────────────────────────┘
+                    ┌── Loại 2: PIPELINE ────────────────────────────────┐
+                    │ C2 ─► C3 ─► detector (Java)   (+ rule-api quản lý rule) │
+                    └─────────────────────────────────────────────────────┘
 ```
 
-Sensor chỉ cần với tới **bus** (RabbitMQ) và **Scope Service** (P1) của Platform. Muốn giám sát thêm app → dựng thêm một Sensor, không sửa gì ở trung tâm.
+Sensor chỉ cần với tới **bus** (Kafka) và **Scope Service** (P1) của Platform. Muốn giám sát thêm app → dựng thêm một Sensor, không sửa gì ở trung tâm.
 
 ## Chạy nhanh (một máy — khuyến nghị để thử)
 
@@ -44,7 +44,7 @@ Trên máy/host của app cần giám sát:
    trỏ `access_log ... waf_combined`. Bỏ qua cũng được — sensor parse được log **combined chuẩn**.
 3. Cấu hình `deploy/sensor/.env`:
    ```
-   EVENT_BUS_URL=amqp://waf:<mật khẩu>@<hub-host>:5672/
+   EVENT_BUS_URL=<hub-host>:9092               # listener EXTERNAL của Kafka ở Platform
    SCOPE_SERVICE_URL=http://<hub-host-hoặc-p1-scope>:8000
    SENSOR_NGINX_LOG_DIR=/var/log/nginx        # thư mục log THẬT của app
    C1_DOMAIN=myapp.com                         # bắt buộc nếu file là access.log
@@ -66,18 +66,19 @@ C1 đọc log mới gần như tức thì (tail), kiểm tra scope, rồi đẩy
 
 ## Thứ tự khởi động & phụ thuộc
 
-1. **Platform** trước (tạo bus + topology + DB + scope/auth).
+1. **Platform** trước (Kafka + tạo topic + DB + scope/auth).
 2. **Pipeline** và **Sensor** sau; nếu bus chưa sẵn sàng, chúng tự thử lại kết nối (không cần đúng thứ tự tuyệt đối).
 
 Các stack độc lập: dừng/khởi động lại Pipeline không ảnh hưởng Platform; thêm Sensor không cần đụng hai stack kia.
 
 ## Nhiều máy (production)
 
-- Chỉ Platform mở cổng bus `5672` ra ngoài (mặc định `.env` đã publish). **Siết firewall / dùng VPN / bật TLS** cho RabbitMQ khi chạy thật; đổi mật khẩu mặc định.
+- Kafka của Platform có listener `EXTERNAL` cho máy khác: đặt `KAFKA_EXTERNAL_HOST=<ip/hostname Platform>` và `KAFKA_EXTERNAL_BIND=0.0.0.0` trong `deploy/platform/.env` (mặc định chỉ bind `127.0.0.1`).
+- Listener dùng PLAINTEXT, **không có xác thực**: chỉ mở ra mạng khi đã chặn firewall chỉ cho IP của Sensor/Pipeline, dùng VPN, hoặc bật SASL/TLS cho Kafka. Ai ghi được vào Kafka đều có thể chèn log giả hoặc ghi một snapshot rỗng lên `rules.changed` làm detector tắt hết rule; khi chạy thật nên bật SASL kèm ACL chỉ cho `rule-api` ghi topic này.
 - Sensor/Pipeline ở máy khác: sửa host trong `EVENT_BUS_URL` và `SCOPE_SERVICE_URL` trỏ tới địa chỉ Platform (Scope cần được cho phép truy cập từ mạng nội bộ).
 - Image: build ở trung tâm rồi đẩy lên registry, hoặc `docker save/load` sang máy Sensor (image `waf/c1-ingestion:dev`).
-- Secret RabbitMQ trong `EVENT_BUS_URL` của Sensor/Pipeline phải khớp `RABBITMQ_USER/PASSWORD` của Platform.
+- `EVENT_BUS_URL` của Sensor/Pipeline ở máy khác là `<hub-host>:9092`; cùng máy thì dùng `kafka:19092` qua `waf-net`.
 
 ## Quan hệ với `docker-compose.yml` ở gốc
 
-`docker-compose.yml` ở gốc repo là bản **tất-cả-trong-một** để dev/demo nhanh trên một máy (`make up`). Ba stack trong `deploy/` là bản **tách rời để triển khai**. Hai cách dùng chung image (`waf/*:dev`) và cùng cấu hình trong `infra/`, `config/`, `contracts/`. Đừng chạy đồng thời cả hai trên cùng máy vì trùng cổng (8080, 5672, …).
+`docker-compose.yml` ở gốc repo là bản **tất-cả-trong-một** để dev/demo nhanh trên một máy (`make up`). Ba stack trong `deploy/` là bản **tách rời để triển khai**. Hai cách dùng chung image (`waf/*:dev`) và cùng cấu hình trong `infra/` (gồm `infra/kafka/create-topics.sh`), `config/`, `contracts/`. Đừng chạy đồng thời cả hai trên cùng máy vì trùng cổng (8080, 9092, …).

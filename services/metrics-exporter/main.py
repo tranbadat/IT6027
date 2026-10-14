@@ -1,6 +1,6 @@
 """metrics-exporter — biến event bus thành /metrics cho Prometheus.
 
-Consume queue q.metrics (bind mọi event) và cập nhật counter. Không sửa service nào khác.
+Consume mọi topic event (consumer group metrics-exporter) và cập nhật counter. Không sửa service nào khác.
 Prometheus scrape http://metrics-exporter:8000/metrics.
 """
 from prometheus_client import start_http_server
@@ -12,6 +12,8 @@ from common import logging as log
 import collectors
 
 SOURCE = "metrics-exporter"
+TOPICS = ["log.raw.ingested", "log.normalized", "log.enriched", "attack.detected",
+          "anomaly.scored", "alert.triggered", "stage.completed"]
 
 
 def main() -> None:
@@ -20,10 +22,10 @@ def main() -> None:
     start_http_server(port)  # phục vụ /metrics ở một thread nền
     log.info("metrics /metrics endpoint up", port=port)
 
-    queue = config.env("EVENT_QUEUE", "q.metrics")
+    group = config.env("EVENT_GROUP", SOURCE)
     bus = bus_mod.EventBus(config.env("EVENT_BUS_URL", required=True), source=SOURCE).connect()
-    log.info("metrics-exporter started", queue=queue)
-    bus.consume(queue, lambda env, routing_key: collectors.update(env))
+    log.info("metrics-exporter started", group=group, topics=TOPICS)
+    bus.consume(group, lambda env, topic: collectors.update(env), topics=TOPICS)
 
 
 if __name__ == "__main__":

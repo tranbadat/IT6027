@@ -16,13 +16,11 @@ if ! command -v openssl >/dev/null 2>&1; then
   exit 1
 fi
 
-rabbitmq_password="$(openssl rand -hex 16)"
 postgres_password="$(openssl rand -hex 16)"
 jwt_secret="$(openssl rand -hex 32)"
 
 umask 077
-sed -e "s/^RABBITMQ_PASSWORD=.*/RABBITMQ_PASSWORD=${rabbitmq_password}/" \
-    -e "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${postgres_password}/" \
+sed -e "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${postgres_password}/" \
     -e "s/^JWT_SECRET=.*/JWT_SECRET=${jwt_secret}/" \
     "$TEMPLATE" > "$ENV_FILE"
 

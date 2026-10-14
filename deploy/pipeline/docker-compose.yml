@@ -1,21 +1,20 @@
 # LOẠI 2 — Pipeline xử lý (Người 1 phần chuẩn hoá + Người 2 phát hiện).
-# C2 chuẩn hoá -> C3 enrichment -> D1 rule engine -> D3 chấm điểm. D2 quản lý rule.
-# Kết nối tới backbone của stack Platform qua network waf-net (EVENT_BUS_URL, SCOPE_SERVICE_URL).
+# C2 chuẩn hoá -> C3 enrichment -> detector (Java: khớp rule + chấm điểm). rule-api quản lý rule.
+# Kết nối tới Kafka và Scope Service của stack Platform qua network waf-net.
 #
 # Chạy sau khi Platform đã lên:
 #        cp .env.example .env
-#        docker compose up -d
+#        docker compose up -d            (thêm --profile ddos để bật nhánh phát hiện DDoS)
 name: waf-pipeline
 
 x-logging: &logging
   driver: json-file
   options: { max-size: "10m", max-file: "3" }
 
-# Không phụ thuộc DB. Backbone (bus, scope) nằm ở stack Platform -> chỉ cần URL.
+# Không phụ thuộc DB. Backbone (Kafka, scope) nằm ở stack Platform -> chỉ cần địa chỉ.
 x-svc-env: &svc-env
   LOG_LEVEL: ${LOG_LEVEL:-info}
-  EVENT_BUS_URL: ${EVENT_BUS_URL:?set EVENT_BUS_URL (amqp://user:pass@<hub>:5672/)}
-  EVENT_EXCHANGE: waf.events
+  EVENT_BUS_URL: ${EVENT_BUS_URL:-kafka:19092}
   SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://p1-scope:8000}
   HTTP_PORT: "8000"
 
@@ -30,13 +29,24 @@ x-worker-healthcheck: &worker-healthcheck
   timeout: 3s
   retries: 3
 
+x-detector-env: &detector-env
+  KAFKA_BOOTSTRAP_SERVERS: ${EVENT_BUS_URL:-kafka:19092}
+  SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://p1-scope:8000}
+  ALERT_SCORE_THRESHOLD: ${ALERT_SCORE_THRESHOLD:-70}
+  JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m"
+
+x-detector: &detector
+  image: waf/detector:dev
+  restart: unless-stopped
+  logging: *logging
+  networks: [waf-net]
+  environment: *detector-env
+
 services:
   c2-parser:
     <<: *svc
     image: waf/c2-parser:dev
-    environment:
-      <<: *svc-env
-      EVENT_QUEUE: q.c2-parser
+    environment: *svc-env
     healthcheck: *worker-healthcheck
 
   c3-enrichment:
@@ -44,47 +54,47 @@ services:
     image: waf/c3-enrichment:dev
     environment:
       <<: *svc-env
-      EVENT_QUEUE: q.c3-enrichment
       GEOIP_DB_PATH: /data/geoip/dbip-city-lite.mmdb
     volumes:
       - ../../data/geoip:/data/geoip:ro
     healthcheck: *worker-healthcheck
 
-  d1-rule-engine:
-    <<: *svc
-    image: waf/d1-rule-engine:dev
-    environment:
-      <<: *svc-env
-      EVENT_QUEUE: q.d1-rule-engine
-      RULES_DIR: /data/rules
-    volumes:
-      - ../../config/rules:/data/rules:ro
-    healthcheck: *worker-healthcheck
+  # Detector Java (services/detector): log.enriched -> attack.detected / anomaly.scored / alert.triggered.
+  detector:
+    <<: *detector
+    command: ["java", "-jar", "/app/app.jar", "detection"]
 
-  d2-rule-manager:
-    <<: *svc
-    image: waf/d2-rule-manager:dev
+  # Quản lý rule (CRUD + kiểm tra RE2). Không publish cổng: chỉ truy cập qua gateway (JWT).
+  rule-api:
+    <<: *detector
+    command: ["java", "-jar", "/app/app.jar", "rule-management"]
     environment:
-      <<: *svc-env
-      RULES_DIR: /data/rules
+      <<: *detector-env
+      RULE_API_PORT: "8090"
+      RULE_STORE_PATH: /data/rules.json
     volumes:
-      - ../../config/rules:/data/rules
+      - rules-data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8090' || exit 1"]
       interval: 10s
       timeout: 3s
-      retries: 3
+      retries: 6
 
-  d3-anomaly-scorer:
-    <<: *svc
-    image: waf/d3-anomaly-scorer:dev
-    environment:
-      <<: *svc-env
-      EVENT_QUEUE: q.d3-anomaly-scorer
-      ANOMALY_THRESHOLD: ${ANOMALY_THRESHOLD:-70}
-    healthcheck: *worker-healthcheck
+  # Nhánh DDoS (profile ddos): phân vùng lại theo domain rồi đếm request + số IP theo cửa sổ.
+  repartitioner:
+    <<: *detector
+    profiles: [ddos]
+    command: ["java", "-jar", "/app/app.jar", "repartition"]
+
+  ddos-detector:
+    <<: *detector
+    profiles: [ddos]
+    command: ["java", "-jar", "/app/app.jar", "ddos"]
 
 networks:
   waf-net:
     external: true
     name: waf-net
+
+volumes:
+  rules-data:

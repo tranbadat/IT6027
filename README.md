@@ -6,7 +6,7 @@ Hệ thống giám sát và phát hiện tấn công web: thu thập log truy c�
 
 ## Kiến trúc
 
-Các service độc lập, giao tiếp qua event bus với một event schema thống nhất:
+Các service độc lập, giao tiếp qua event bus **Kafka** (topic = tên event, key = `domain|src_ip`) với một event schema thống nhất ([`contracts/events`](contracts/events/README.md)):
 
 ```
 { event, request_id | session_id, timestamp, data }
@@ -63,6 +63,8 @@ Ràng buộc xuyên suốt: mọi service **phải** gọi `GET /scope/check` (P
 
 D1 là lõi kỹ thuật của đề tài — không chỉ nạp lại bộ rule có sẵn (OWASP CRS) mà phải tự xử lý logic khớp mẫu.
 
+D1, D2, D3 được hiện thực chung trong [`services/detector`](services/detector/README.md) (Java 17, regex RE2 thời gian tuyến tính): role `detection` (D1 + D3), `rule-management` (D2), cùng nhánh phát hiện DDoS tuỳ chọn.
+
 ### Platform (Người 3)
 
 | Module | Nhiệm vụ |
@@ -82,15 +84,16 @@ make up      # tạo .env (mật khẩu ngẫu nhiên), build & khởi động T
 make demo    # gửi request thử (gồm SQLi/XSS/path traversal) tới web mục tiêu
 make e2e     # nghiệm thu end-to-end toàn pipeline theo "định nghĩa hoàn thành"
 make smoke   # kiểm tra hạ tầng
+make test    # toàn bộ unit test (Python + Java)
 ```
 
-Toàn bộ 11 service (C1–C3, D1–D3, P1–P5) viết bằng Python, dùng chung image nền `waf/base:dev` và thư viện `services/common/`. Sau `make up`:
+C1–C3 và P1–P5 viết bằng Python, dùng chung image nền `waf/base:dev` và thư viện `services/common/` (bus Kafka dùng `confluent-kafka`); khối phát hiện D1–D3 viết bằng Java trong `services/detector`. Sau `make up`:
 
 - **Dashboard realtime (P5):** http://localhost:8080 — lưu lượng theo domain, top loại tấn công, top IP nguồn, lịch sử cảnh báo, feed trực tiếp.
 - **Email cảnh báo (P4):** http://localhost:8025 (Mailpit).
-- **RabbitMQ UI:** http://localhost:15672 · **Swagger UI:** http://localhost:8090.
+- **Kafka UI:** http://localhost:8085 (profile `tools`) · **Swagger UI:** http://localhost:8090.
 
-Luồng thật: gửi request (kể cả SQLi) tới Nginx mục tiêu → C1 tail log → C2 chuẩn hoá → C3 enrichment → D1 khớp rule tự viết → D3 chấm điểm → P4 cảnh báo (email + webhook) → P5 hiển thị gần như tức thời. Log ngoài phạm vi Scope Service không bị xử lý.
+Luồng thật: gửi request (kể cả SQLi) tới Nginx mục tiêu → C1 tail log → C2 chuẩn hoá → C3 enrichment → detector khớp rule tự viết và chấm điểm (D1 + D3) → P4 cảnh báo (email + webhook) → P5 hiển thị gần như tức thời. Log ngoài phạm vi Scope Service không bị xử lý.
 
 Chạy một phần (vd hạ tầng + mock khi service chưa xong): đặt `COMPOSE_PROFILES=mock,docs` và `SCOPE_SERVICE_URL=AUTH_SERVICE_URL=http://mock-api` trong `.env`. Chi tiết: [`docs/infrastructure.md`](docs/infrastructure.md) và [`services/README.md`](services/README.md).
 
@@ -101,8 +104,8 @@ Ngoài bản tất-cả-trong-một ở trên, hệ thống còn tách thành **
 | Loại | Stack | Thành phần | Deploy ở đâu |
 |---|---|---|---|
 | 1 | Sensor | C1 | mỗi app cần giám sát (cạnh Nginx/Apache của app) |
-| 2 | Pipeline | C2, C3, D1, D2, D3 | trung tâm |
-| 3 | Platform | RabbitMQ, Postgres, P1–P5, gateway | trung tâm (hub) |
+| 2 | Pipeline | C2, C3, detector (D1–D3) | trung tâm |
+| 3 | Platform | Kafka, Postgres, P1–P5, gateway | trung tâm (hub) |
 
 ```bash
 make deploy-up     # tạo waf-net, build image, sinh .env khớp nhau, dựng cả 3 stack

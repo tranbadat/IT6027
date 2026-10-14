@@ -15,7 +15,6 @@ done < .env
 
 GATEWAY="http://127.0.0.1:${GATEWAY_PORT:-8080}"
 MAILPIT="http://127.0.0.1:${MAILPIT_UI_PORT:-8025}"
-RABBIT_API="http://127.0.0.1:${RABBITMQ_UI_PORT:-15672}/api"
 MARK="e2e-$(date +%s)"
 DEADLINE_SECONDS=45
 
@@ -42,6 +41,17 @@ wait_for() {
   return 1
 }
 
+# Số message trong topic dead-letter (tổng end offset). Tìm container Kafka theo label compose
+# nên dùng được cho cả bản tất-cả-trong-một lẫn stack deploy platform.
+dlq_count() {
+  local kafka
+  kafka="$(docker ps -q --filter label=com.docker.compose.service=kafka | head -1)"
+  [[ -n "$kafka" ]] || { echo 0; return; }
+  docker exec "$kafka" /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server localhost:19092 \
+    --topic waf.deadletter 2>/dev/null | awk -F: '{s += $3} END {print s + 0}'
+}
+DLQ_BEFORE="$(dlq_count)"
+
 TOKEN="$(token)"
 [[ -n "$TOKEN" ]] || { echo "Không lấy được token từ $GATEWAY/api/auth/token" >&2; exit 2; }
 summary() { curl -s --max-time 5 -H "Authorization: Bearer $TOKEN" "$GATEWAY/api/dashboard/summary"; }
@@ -67,8 +77,8 @@ section "4. Ràng buộc scope: log ngoài phạm vi không bị xử lý"
 curl -s -o /dev/null -H 'Host: internal.local' \
   "http://127.0.0.1:${WEB_NGINX_PORT:-8081}/api/x?q=1%27%20OR%201=1--${MARK}"
 sleep 6
-ndl="$(curl -s -u "$RABBITMQ_USER:$RABBITMQ_PASSWORD" "$RABBIT_API/queues/%2F/q.deadletter" | jq '.messages // 0')"
-if [[ "$ndl" == "0" ]]; then pass "không có message lỗi trong dead-letter"; else fail "dead-letter có $ndl message"; fi
+ndl=$(( $(dlq_count) - DLQ_BEFORE ))
+if (( ndl == 0 )); then pass "không có message lỗi mới trong dead-letter (waf.deadletter)"; else fail "dead-letter có thêm $ndl message"; fi
 if summary | jq -e '[.top_ips[].ip] | index("internal.local")' >/dev/null 2>&1; then
   fail "internal.local bị xử lý (không được phép)"
 else

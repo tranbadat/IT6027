@@ -4,7 +4,7 @@ Theo dõi tiến độ xử lý toàn pipeline qua event bus và expose trạng 
 
 - Thread consumer (kết nối bus riêng): nhận log.# + attack.detected + anomaly.scored
   + alert.triggered, tăng bộ đếm theo (domain, stage).
-- Thread publisher (kết nối bus RIÊNG — pika BlockingConnection không thread-safe):
+- Thread publisher (client Kafka RIÊNG, tách khỏi thread consumer):
   định kỳ publish stage.completed cho mỗi (domain, stage) có thay đổi.
 - Thread chính: FastAPI/uvicorn phục vụ GET /healthz và GET /pipelines.
 """
@@ -22,6 +22,9 @@ import pipelines as pipelines_mod
 import state as state_mod
 
 SOURCE = "p3-orchestrator"
+# Mọi event của pipeline (trừ stage.completed do chính P3 phát ra).
+TOPICS = ["log.raw.ingested", "log.normalized", "log.enriched",
+          "attack.detected", "anomaly.scored", "alert.triggered"]
 
 # Ánh xạ event (routing key) -> stage trong pipeline.
 EVENT_STAGE = {
@@ -64,11 +67,11 @@ def build_handler(state):
     return handle
 
 
-def run_consumer(bus_url, queue, state):
-    """Thread nền: kết nối bus riêng và consume vô hạn."""
-    bus = bus_mod.EventBus(bus_url, source=SOURCE).connect()
-    log.info("consumer started", queue=queue)
-    bus.consume(queue, build_handler(state))
+def start_consumer(bus_url, group, state):
+    """Thread nền: client Kafka riêng; consumer lỗi thì thoát process để Docker khởi động lại."""
+    log.info("consumer starting", group=group, topics=TOPICS)
+    return bus_mod.start_consumer_thread(lambda: bus_mod.EventBus(bus_url, source=SOURCE), group,
+                                         build_handler(state), TOPICS, name="consumer")
 
 
 def run_publisher(bus_url, state, domain_to_pipeline, window_seconds):
@@ -108,18 +111,18 @@ def main() -> None:
     global _pipelines
     log.set_service(SOURCE)
     bus_url = config.env("EVENT_BUS_URL", required=True)
-    queue = config.env("EVENT_QUEUE", "q.p3-orchestrator")
+    group = config.env("EVENT_GROUP", SOURCE)
     pipelines_dir = config.env("PIPELINES_DIR", "/config/pipelines")
     window_seconds = config.env_int("STAGE_WINDOW_SECONDS", 10)
 
     _pipelines = pipelines_mod.load_pipelines(pipelines_dir)
     domain_to_pipeline = pipelines_mod.domain_index(_pipelines)
 
-    _start_thread(run_consumer, "consumer", (bus_url, queue, _state))
+    start_consumer(bus_url, group, _state)
     _start_thread(run_publisher, "publisher",
                   (bus_url, _state, domain_to_pipeline, window_seconds))
 
-    log.info("p3-orchestrator started", queue=queue, pipelines=len(_pipelines))
+    log.info("p3-orchestrator started", group=group, pipelines=len(_pipelines))
     uvicorn.run(app, host="0.0.0.0", port=config.env_int("HTTP_PORT", 8000),
                 access_log=False)
 

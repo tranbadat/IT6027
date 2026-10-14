@@ -8,11 +8,11 @@ x-logging: &logging
     max-size: "10m"
     max-file: "3"
 
-# Biến môi trường dùng chung cho mọi service ứng dụng (C1–C3, D1–D3, P1–P5).
+# Biến môi trường dùng chung cho các service Python (C1–C3, P1–P5).
+# EVENT_BUS_URL = bootstrap servers của Kafka (listener nội bộ của network backend).
 x-app-env: &app-env
   LOG_LEVEL: ${LOG_LEVEL:-info}
-  EVENT_BUS_URL: amqp://${RABBITMQ_USER:?set RABBITMQ_USER in .env}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}@rabbitmq:5672/
-  EVENT_EXCHANGE: waf.events
+  EVENT_BUS_URL: kafka:19092
   DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-waf}
   SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://mock-api}
   AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://mock-api}
@@ -23,10 +23,28 @@ x-app: &app
   logging: *logging
   networks: [backend]
   depends_on:
-    rabbitmq:
-      condition: service_healthy
+    kafka-init:
+      condition: service_completed_successfully
     postgres:
       condition: service_healthy
+
+# Detector Java (services/detector). Ngưỡng chấm điểm: xem services/detector/README.md
+x-detector-env: &detector-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+  SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://mock-api}
+  ALERT_SCORE_THRESHOLD: ${ALERT_SCORE_THRESHOLD:-70}
+  JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m"
+
+x-detector: &detector
+  build: ./services/detector
+  image: waf/detector:dev
+  restart: unless-stopped
+  logging: *logging
+  networks: [backend]
+  environment: *detector-env
+  depends_on:
+    kafka-init:
+      condition: service_completed_successfully
 
 x-nginx-healthcheck: &nginx-healthcheck
   test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/healthz"]
@@ -68,35 +86,85 @@ services:
       retries: 3
 
   # ─────────────── Hạ tầng dùng chung ───────────────
-  rabbitmq:
-    image: rabbitmq:4.1-management-alpine
-    hostname: rabbitmq # giữ cố định để node name không đổi giữa các lần tạo lại container
+  # Event bus Kafka (KRaft, một node). Listener nội bộ kafka:19092 cho service trong network
+  # backend; listener 127.0.0.1:9092 cho công cụ trên máy host. Topic: infra/kafka/create-topics.sh
+  kafka-volume-init:
+    image: ${KAFKA_IMAGE:-apache/kafka:4.1.0}
+    user: "0:0"
+    restart: "no"
+    networks: [backend]
+    entrypoint: ["/bin/sh", "-ec", "mkdir -p /var/lib/kafka/data && chown -R 1000:1000 /var/lib/kafka/data"]
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  kafka:
+    image: ${KAFKA_IMAGE:-apache/kafka:4.1.0}
+    hostname: kafka
     restart: unless-stopped
     logging: *logging
     networks: [backend]
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     ports:
-      - "127.0.0.1:${RABBITMQ_AMQP_PORT:-5672}:5672"
-      - "127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"
+      - "127.0.0.1:${KAFKA_HOST_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: CONTROLLER://:29093,PLAINTEXT://:19092,PLAINTEXT_HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:${KAFKA_HOST_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-4L6g3nShT-eMCtK--X86sw}
     volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-      - ./infra/rabbitmq:/etc/rabbitmq/waf:ro
-      - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
-    # Nạp exchange/queue/binding sau mỗi lần container khởi động (idempotent).
-    # Không nạp definitions lúc boot vì khi đó RabbitMQ bỏ qua việc tạo user mặc định từ env.
-    # Hook phải chạy bằng user rabbitmq: chạy bằng root sẽ tạo .erlang.cookie sai chủ sở hữu và node không boot được.
-    post_start:
-      - command: ["sh", "/etc/rabbitmq/waf/load-topology.sh", "--boot"]
-        user: rabbitmq
-    # Chỉ healthy khi node sẵn sàng VÀ topology đã được nạp.
+      - kafka-data:/var/lib/kafka/data
+    depends_on:
+      kafka-volume-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "test -f /tmp/topology-ready && rabbitmq-diagnostics -q check_port_connectivity"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
       interval: 10s
       timeout: 10s
       retries: 12
       start_period: 20s
+
+  kafka-init:
+    image: ${KAFKA_IMAGE:-apache/kafka:4.1.0}
+    restart: "no"
+    networks: [backend]
+    entrypoint: ["/bin/bash", "/opt/waf/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    volumes:
+      - ./infra/kafka/create-topics.sh:/opt/waf/create-topics.sh:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # Xem message trong topic khi phát triển (profile tools): http://localhost:8085
+  kafka-ui:
+    profiles: [tools]
+    image: ${KAFKA_UI_IMAGE:-ghcr.io/kafbat/kafka-ui:v1.4.2}
+    restart: unless-stopped
+    logging: *logging
+    networks: [backend]
+    ports:
+      - "127.0.0.1:${KAFKA_UI_PORT:-8085}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: waf-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+      DYNAMIC_CONFIG_ENABLED: "false"
+    depends_on:
+      kafka:
+        condition: service_healthy
 
   postgres:
     image: postgres:17-alpine
@@ -129,7 +197,7 @@ services:
     environment:
       AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://mock-api}
       SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://mock-api}
-      RULES_SERVICE_URL: ${RULES_SERVICE_URL:-http://d2-rule-manager:8000}
+      RULES_SERVICE_URL: ${RULES_SERVICE_URL:-http://rule-api:8090}
       PIPELINE_SERVICE_URL: ${PIPELINE_SERVICE_URL:-http://p3-orchestrator:8000}
       ALERTING_SERVICE_URL: ${ALERTING_SERVICE_URL:-http://p4-alerting:8000}
       DASHBOARD_SERVICE_URL: ${DASHBOARD_SERVICE_URL:-http://p5-dashboard:8000}
@@ -221,7 +289,6 @@ services:
     image: waf/c2-parser:dev
     environment:
       <<: *app-env
-      EVENT_QUEUE: q.c2-parser
 
   c3-enrichment:
     <<: *app
@@ -232,49 +299,44 @@ services:
     image: waf/c3-enrichment:dev
     environment:
       <<: *app-env
-      EVENT_QUEUE: q.c3-enrichment
       GEOIP_DB_PATH: /data/geoip/dbip-city-lite.mmdb
     volumes:
       - ./data/geoip:/data/geoip:ro
 
-  # Người 2 — Detection Engine
-  d1-rule-engine:
-    <<: *app
-    profiles: [d1, detection, app]
-    build:
-      context: ./services
-      dockerfile: d1-rule-engine/Dockerfile
-    image: waf/d1-rule-engine:dev
-    environment:
-      <<: *app-env
-      EVENT_QUEUE: q.d1-rule-engine
-      RULES_DIR: /data/rules
-    volumes:
-      - ./config/rules:/data/rules:ro
+  # Người 2 — Detection Engine (Java, services/detector): một image, nhiều role.
+  #   detector      D1 khớp rule + D3 chấm điểm: log.enriched -> attack.detected / anomaly.scored / alert.triggered
+  #   rule-api      D2 quản lý rule (CRUD, kiểm tra RE2), phát snapshot lên topic rules.changed
+  #   repartitioner + ddos-detector (profile ddos): phát hiện DDoS theo domain
+  detector:
+    <<: *detector
+    profiles: [detection, app]
+    command: ["java", "-jar", "/app/app.jar", "detection"]
 
-  d2-rule-manager:
-    <<: *app
-    profiles: [d2, detection, app]
-    build:
-      context: ./services
-      dockerfile: d2-rule-manager/Dockerfile
-    image: waf/d2-rule-manager:dev
+  rule-api:
+    <<: *detector
+    profiles: [detection, app]
+    command: ["java", "-jar", "/app/app.jar", "rule-management"]
     environment:
-      <<: *app-env
-      RULES_DIR: /data/rules
+      <<: *detector-env
+      RULE_API_PORT: "8090"
+      RULE_STORE_PATH: /data/rules.json
     volumes:
-      - ./config/rules:/data/rules
+      - rules-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8090' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
 
-  d3-anomaly-scorer:
-    <<: *app
-    profiles: [d3, detection, app]
-    build:
-      context: ./services
-      dockerfile: d3-anomaly-scorer/Dockerfile
-    image: waf/d3-anomaly-scorer:dev
-    environment:
-      <<: *app-env
-      EVENT_QUEUE: q.d3-anomaly-scorer
+  repartitioner:
+    <<: *detector
+    profiles: [ddos]
+    command: ["java", "-jar", "/app/app.jar", "repartition"]
+
+  ddos-detector:
+    <<: *detector
+    profiles: [ddos]
+    command: ["java", "-jar", "/app/app.jar", "ddos"]
 
   # Người 3 — Platform
   p1-scope:
@@ -308,7 +370,6 @@ services:
     image: waf/p3-orchestrator:dev
     environment:
       <<: *app-env
-      EVENT_QUEUE: q.p3-orchestrator
       PIPELINES_DIR: /config/pipelines
     volumes:
       - ./config/pipelines:/config/pipelines:ro
@@ -322,7 +383,6 @@ services:
     image: waf/p4-alerting:dev
     environment:
       <<: *app-env
-      EVENT_QUEUE: q.p4-alerting
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       ALERT_EMAIL_FROM: waf-alerts@waf.local
@@ -338,7 +398,6 @@ services:
     image: waf/p5-dashboard:dev
     environment:
       <<: *app-env
-      EVENT_QUEUE: q.p5-dashboard
 
   # Quan sát: tổng hợp metric từ event bus cho Prometheus (profile obs).
   metrics-exporter:
@@ -350,7 +409,6 @@ services:
     image: waf/metrics-exporter:dev
     environment:
       <<: *app-env
-      EVENT_QUEUE: q.metrics
     ports:
       - "127.0.0.1:${METRICS_PORT:-9101}:8000"
 
@@ -361,5 +419,6 @@ networks:
 volumes:
   nginx-logs:
   apache-logs:
-  rabbitmq-data:
+  kafka-data:
+  rules-data:
   postgres-data:

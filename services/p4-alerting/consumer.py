@@ -1,4 +1,4 @@
-"""Handler + thread nền tiêu thụ q.p4-alerting (anomaly.scored + alert.triggered).
+"""Handler + thread nền tiêu thụ topic anomaly.scored + alert.triggered (consumer group p4-alerting).
 
 Nguyên tắc phản ứng: CHỈ cảnh báo (email/webhook), KHÔNG tự chặn IP hay đổi cấu hình.
 Nếu sau này thêm phản ứng tự động thì phải qua phê duyệt thủ công và mặc định dry-run.
@@ -13,6 +13,7 @@ import notify as notify_mod
 import thresholds as thresholds_mod
 
 SOURCE = "p4-alerting"
+TOPICS = ["anomaly.scored", "alert.triggered"]
 
 
 def _deliver(alert: dict, smtp_cfg, webhook_url, store) -> None:
@@ -87,13 +88,8 @@ def build_handler(store, cooldown, thresholds, smtp_cfg, webhook_url, repo=None)
     return handle
 
 
-def start_consumer_thread(bus_url: str, queue: str, handler) -> threading.Thread:
-    """Chạy consumer ở thread nền với kết nối bus RIÊNG (pika không thread-safe)."""
-    def _run() -> None:
-        bus = bus_mod.EventBus(bus_url, source=SOURCE).connect()
-        log.info("p4-alerting consumer started", queue=queue)
-        bus.consume(queue, handler)
-
-    thread = threading.Thread(target=_run, daemon=True, name="p4-consumer")
-    thread.start()
-    return thread
+def start_consumer_thread(bus_url: str, group: str, handler) -> threading.Thread:
+    """Chạy consumer ở thread nền với client Kafka RIÊNG; consumer lỗi thì thoát process để Docker khởi động lại."""
+    log.info("p4-alerting consumer starting", group=group, topics=TOPICS)
+    return bus_mod.start_consumer_thread(lambda: bus_mod.EventBus(bus_url, source=SOURCE), group,
+                                         handler, TOPICS, name="p4-consumer")

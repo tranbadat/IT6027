@@ -62,11 +62,11 @@
       "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (status_class) (rate(waf_http_requests_total[1m]))", "legendFormat": "{{status_class}}" }]
     },
     {
-      "id": 8, "type": "timeseries", "title": "Độ sâu queue RabbitMQ (messages ready)",
+      "id": 8, "type": "timeseries", "title": "Kafka consumer lag theo group (message chưa xử lý)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (queue) (rabbitmq_queue_messages_ready)", "legendFormat": "{{queue}}" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (consumergroup) (clamp_min(kafka_consumergroup_lag, 0))", "legendFormat": "{{consumergroup}}" }]
     },
     {
       "id": 9, "type": "table", "title": "Top rule khớp nhiều nhất",

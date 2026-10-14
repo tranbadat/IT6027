@@ -1,4 +1,4 @@
-"""Unit test cho LogTailer (không cần RabbitMQ). Chạy: python test_tailer.py"""
+"""Unit test cho LogTailer (không cần Kafka). Chạy: python test_tailer.py"""
 import os
 import tempfile
 

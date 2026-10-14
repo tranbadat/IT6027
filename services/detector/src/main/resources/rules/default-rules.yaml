@@ -1,0 +1,83 @@
+# Bộ rule mặc định của detector (RE2: thời gian khớp tuyến tính, không lookaround/backreference).
+# group = loại tấn công (attack_type trong contract). score: critical 95, high 85, medium 65.
+# Điểm request = score lớn nhất + 10 cho mỗi rule khớp thêm; cảnh báo khi đạt ALERT_SCORE_THRESHOLD.
+# targets: url (path), query, body, headers (mọi header), user_agent, referer.
+# normalizers: url_decode / html_decode (giải mã tối đa 2 lớp), sql_canonical (bỏ comment /* */).
+schemaVersion: 1
+rules:
+  # ── SQL Injection (OWASP A03) ──
+  - {id: SQLI_UNION_SELECT, group: sql_injection, description: SQL Injection UNION SELECT, enabled: true,
+     targets: [url, query, headers], score: 95, normalizers: [url_decode, html_decode, sql_canonical],
+     pattern: '(?i)union[\s/*]+(?:all[\s/*]+)?select\b'}
+  - {id: SQLI_BOOLEAN_TAUTOLOGY, group: sql_injection, description: SQL Injection boolean OR/AND tautology, enabled: true,
+     targets: [url, query, headers], score: 85, normalizers: [url_decode, html_decode, sql_canonical],
+     pattern: '(?i)[''"\s](?:or|and)\s+(?:[''"]?\d+[''"]?\s*=\s*[''"]?\d+|''[^'']{0,32}''\s*=\s*''[^'']{0,32}'')'}
+  - {id: SQLI_TIME_BASED, group: sql_injection, description: SQL Injection time-based / information_schema, enabled: true,
+     targets: [url, query, headers], score: 85, normalizers: [url_decode, html_decode, sql_canonical],
+     pattern: '(?i)(?:sleep|benchmark|pg_sleep)\s*\(|waitfor\s+delay|information_schema'}
+  - {id: SQLI_QUOTE_COMMENT, group: sql_injection, description: SQL Injection dấu nháy kèm comment, enabled: true,
+     targets: [url, query], score: 65, normalizers: [url_decode, html_decode],
+     pattern: '''\s*(?:--|#|;|/\*)'}
+
+  # ── Cross-Site Scripting (OWASP A03) ──
+  - {id: XSS_SCRIPT_TAG, group: xss, description: XSS thẻ script, enabled: true,
+     targets: [url, query, headers], score: 85, normalizers: [url_decode, html_decode],
+     pattern: '(?i)<\s*script[\s>/]'}
+  - {id: XSS_EVENT_HANDLER, group: xss, description: XSS thuộc tính sự kiện inline, enabled: true,
+     targets: [url, query, headers], score: 65, normalizers: [url_decode, html_decode],
+     pattern: '(?i)\bon(?:error|load|click|dblclick|mouseover|mouseenter|mouseout|focus|blur|submit|change|input|keydown|keyup|keypress|toggle|animationstart|pointerover|begin)\s*='}
+  - {id: XSS_JS_URI, group: xss, description: 'XSS URI javascript:', enabled: true,
+     targets: [url, query, headers], score: 65, normalizers: [url_decode, html_decode],
+     pattern: '(?i)javascript:\s*\w'}
+  - {id: XSS_HTML_INJECTION, group: xss, description: XSS chèn thẻ HTML nguy hiểm, enabled: true,
+     targets: [url, query, headers], score: 65, normalizers: [url_decode, html_decode],
+     pattern: '(?i)<\s*(?:iframe|svg|img|body|object|embed)\b'}
+
+  # ── Path Traversal (OWASP A01) ──
+  - {id: PT_DOTDOT_SLASH, group: path_traversal, description: Path traversal ../ hoặc ..\, enabled: true,
+     targets: [url, query], score: 85, normalizers: [url_decode],
+     pattern: '\.\.[\\/]'}
+  - {id: PT_ENCODED_TRAVERSAL, group: path_traversal, description: Path traversal dạng percent-encode, enabled: true,
+     targets: [url, query], score: 85, normalizers: [],
+     pattern: '(?i)\.\.%2f|\.\.%5c|%2e%2e%2f|%2e%2e/|%2e%2e%5c'}
+
+  # ── Command Injection (OWASP A03) ──
+  # Lệnh phải đứng một mình (theo sau là khoảng trắng, hết chuỗi hoặc ký tự shell) và chỉ xét url/query:
+  # tránh khớp nhầm User-Agent kiểu "Android 9; SH-03K", "U; Android 11; id-id" hay path "/item;id=42".
+  - {id: CI_SHELL_METACHAR_CMD, group: command_injection, description: Command injection ký tự phân tách kèm lệnh, enabled: true,
+     targets: [url, query], score: 95, normalizers: [url_decode],
+     pattern: '(?i)(?:;|\||\$\(|&&|`)\s*(?:cat|ls|id|whoami|uname|wget|curl|nc|bash|sh|ping|rm|chmod|nslookup|dig)(?:\s|$|[;|&`)])'}
+  - {id: CI_SENSITIVE_CMD, group: command_injection, description: Command injection chuỗi thực thi điển hình, enabled: true,
+     targets: [url, query, headers], score: 85, normalizers: [url_decode],
+     pattern: '(?i)cat\s+/etc/passwd|/bin/(?:ba)?sh\b|nc\s+-e|bash\s+-i|python\s+-c\b'}
+
+  # ── Thành phần lỗi thời và template injection (OWASP A06, A03) ──
+  - {id: LOG4SHELL_JNDI, group: log4shell, description: Log4Shell JNDI lookup, enabled: true,
+     targets: [url, query, headers], score: 95, normalizers: [url_decode],
+     pattern: '(?i)\$\{jndi:(?:ldaps?|rmi|dns|iiop|corba|nis):'}
+  - {id: SSTI_EXPRESSION, group: ssti, description: SSTI biểu thức template, enabled: true,
+     targets: [url, query, headers], score: 85, normalizers: [url_decode],
+     pattern: '\{\{[^}]{1,100}\}\}'}
+
+  # ── LFI / RFI / file nhạy cảm (OWASP A01, A03, A05) ──
+  - {id: LFI_SYSTEM_FILES, group: lfi, description: LFI đọc file hệ thống, enabled: true,
+     targets: [url, query, headers], score: 85, normalizers: [url_decode],
+     pattern: '(?i)/etc/(?:passwd|shadow|hosts)|/proc/self/environ|boot\.ini|win\.ini'}
+  - {id: LFI_PHP_WRAPPERS, group: lfi, description: LFI PHP/stream wrapper, enabled: true,
+     targets: [url, query, headers], score: 85, normalizers: [url_decode],
+     pattern: '(?i)php://(?:filter|input)|file://|expect://|data://text|zip://'}
+  # Tên tham số phải đứng đầu query hoặc ngay sau "&": tránh khớp redirect_url=, return_url=, img_src=.
+  - {id: RFI_REMOTE_INCLUDE, group: rfi, description: RFI chèn file từ xa, enabled: true,
+     targets: [query], score: 85, normalizers: [url_decode],
+     pattern: '(?i)(?:^|&)(?:include|require|page|file|url|path|src|template|load|doc)=https?://'}
+  - {id: SF_DOTFILES, group: sensitive_file, description: Truy cập dotfile hoặc thư mục quản trị, enabled: true,
+     targets: [url], score: 65, normalizers: [url_decode],
+     pattern: '(?i)/\.(?:env|git|svn|htaccess|htpasswd|aws|ssh)\b'}
+  - {id: SF_BACKUP_CONFIG, group: sensitive_file, description: Dò file backup hoặc cấu hình bị lộ, enabled: true,
+     targets: [url], score: 65, normalizers: [url_decode],
+     pattern: '(?i)wp-config\.php|/phpinfo\.php|\.(?:bak|old|sql|swp)$'}
+
+  # ── Dò quét / recon ──
+  - {id: SCANNER_TOOL_UA, group: scanner, description: Công cụ quét lỗ hổng qua User-Agent, enabled: true,
+     targets: [user_agent], score: 65, normalizers: [],
+     pattern: '(?i)sqlmap|havij|nikto|nmap|masscan|acunetix|nessus|dirbuster|gobuster|wpscan|nuclei|zgrab|fimap|w3af|hydra|zaproxy|arachni'}

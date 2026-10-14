@@ -1,4 +1,4 @@
-"""Handler + thread nền tiêu thụ q.p5-dashboard (tất cả loại event).
+"""Handler + thread nền tiêu thụ các topic event (consumer group p5-dashboard).
 
 Cập nhật AggregateStore và đẩy các event realtime vào StreamHub.
 """
@@ -8,6 +8,8 @@ from common import bus as bus_mod
 from common import logging as log
 
 SOURCE = "p5-dashboard"
+TOPICS = ["log.enriched", "attack.detected", "anomaly.scored", "alert.triggered",
+          "stage.completed"]
 
 # Chỉ các event này được đẩy realtime qua SSE; stage.completed chỉ vào tổng hợp.
 _REALTIME_EVENTS = {"attack.detected", "anomaly.scored", "alert.triggered", "log.enriched"}
@@ -32,13 +34,8 @@ def build_handler(store, hub, repo=None):
     return handle
 
 
-def start_consumer_thread(bus_url: str, queue: str, handler) -> threading.Thread:
-    """Chạy consumer ở thread nền với kết nối bus RIÊNG (pika không thread-safe)."""
-    def _run() -> None:
-        bus = bus_mod.EventBus(bus_url, source=SOURCE).connect()
-        log.info("p5-dashboard consumer started", queue=queue)
-        bus.consume(queue, handler)
-
-    thread = threading.Thread(target=_run, daemon=True, name="p5-consumer")
-    thread.start()
-    return thread
+def start_consumer_thread(bus_url: str, group: str, handler) -> threading.Thread:
+    """Chạy consumer ở thread nền với client Kafka RIÊNG; consumer lỗi thì thoát process để Docker khởi động lại."""
+    log.info("p5-dashboard consumer starting", group=group, topics=TOPICS)
+    return bus_mod.start_consumer_thread(lambda: bus_mod.EventBus(bus_url, source=SOURCE), group,
+                                         handler, TOPICS, name="p5-consumer")

@@ -23,13 +23,15 @@ def create_app(store, repo=None) -> FastAPI:
         counters = store.snapshot_counters()
         if repo is not None:
             try:
-                return {"alerts": repo.recent(limit, domain), "counters": counters,
-                        "persisted": True}
+                # count = tổng cảnh báo trong DB, không bị đặt lại khi service khởi động lại.
+                return {"alerts": repo.recent(limit, domain), "count": repo.count(),
+                        "counters": counters, "persisted": True}
             except Exception:
                 pass  # DB tạm lỗi -> quay về bộ nhớ
         items = store.recent_alerts(limit)
         if domain:
             items = [a for a in items if a.get("domain") == domain]
-        return {"alerts": items, "counters": counters, "persisted": False}
+        return {"alerts": items, "count": counters.get("alerts", len(items)),
+                "counters": counters, "persisted": False}
 
     return app

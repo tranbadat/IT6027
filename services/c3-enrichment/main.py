@@ -11,6 +11,7 @@ from common import scope as scope_mod
 import enrich as enrich_mod
 
 SOURCE = "c3-enrichment"
+TOPICS = ["log.normalized"]
 
 
 def build_handler(bus: bus_mod.EventBus, scope: scope_mod.ScopeClient,
@@ -44,13 +45,13 @@ def build_handler(bus: bus_mod.EventBus, scope: scope_mod.ScopeClient,
 def main() -> None:
     log.set_service(SOURCE)
     health.start_heartbeat()
-    queue = config.env("EVENT_QUEUE", "q.c3-enrichment")
+    group = config.env("EVENT_GROUP", SOURCE)
     geo = enrich_mod.GeoResolver(config.env("GEOIP_DB_PATH"))
     rates = enrich_mod.RequestRateCounter()
     bus = bus_mod.EventBus(config.env("EVENT_BUS_URL", required=True), source=SOURCE).connect()
     scope = scope_mod.ScopeClient(config.env("SCOPE_SERVICE_URL", required=True))
-    log.info("c3-enrichment started", queue=queue)
-    bus.consume(queue, build_handler(bus, scope, geo, rates))
+    log.info("c3-enrichment started", group=group, topics=TOPICS)
+    bus.consume(group, build_handler(bus, scope, geo, rates), topics=TOPICS)
 
 
 if __name__ == "__main__":

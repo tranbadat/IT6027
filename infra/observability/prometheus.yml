@@ -9,10 +9,10 @@ scrape_configs:
     static_configs:
       - targets: ["metrics-exporter:8000"]
 
-  # Số liệu hạ tầng RabbitMQ (queue depth, message rate) từ plugin rabbitmq_prometheus.
-  - job_name: rabbitmq
+  # Số liệu hạ tầng Kafka (consumer lag theo group, offset theo topic) từ kafka-exporter.
+  - job_name: kafka
     static_configs:
-      - targets: ["rabbitmq:15692"]
+      - targets: ["kafka-exporter:9308"]
 
   - job_name: prometheus
     static_configs:

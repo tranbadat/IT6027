@@ -19,8 +19,7 @@ services:
     networks: [waf-net]
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      EVENT_BUS_URL: ${EVENT_BUS_URL:?set EVENT_BUS_URL (amqp://user:pass@<hub>:5672/)}
-      EVENT_EXCHANGE: waf.events
+      EVENT_BUS_URL: ${EVENT_BUS_URL:-kafka:19092}
       SCOPE_SERVICE_URL: ${SCOPE_SERVICE_URL:-http://p1-scope:8000}
       LOG_DIR: /var/log/waf
       # Đặt domain của app khi file log là access.log (không suy được từ tên file).

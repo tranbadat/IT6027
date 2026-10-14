@@ -1,6 +1,6 @@
 """Logic làm giàu cho C3: geoIP, đếm tần suất request, gom session.
 
-Tách riêng khỏi main để unit test không cần RabbitMQ hay GeoIP DB thật.
+Tách riêng khỏi main để unit test không cần Kafka hay GeoIP DB thật.
 """
 import ipaddress
 import os

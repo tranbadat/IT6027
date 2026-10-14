@@ -1,6 +1,6 @@
 """Chuyển event trên bus thành metric Prometheus.
 
-Tách khỏi main để unit test không cần RabbitMQ. Nhãn (label) được giữ ở mức bounded
+Tách khỏi main để unit test không cần Kafka. Nhãn (label) được giữ ở mức bounded
 (domain, attack_type, severity, rule_id, stage) để tránh nổ cardinality.
 """
 from prometheus_client import Counter, Histogram

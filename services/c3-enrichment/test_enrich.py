@@ -1,4 +1,4 @@
-"""Unit test cho enrich (không cần RabbitMQ hay GeoIP DB thật). Chạy: python test_enrich.py"""
+"""Unit test cho enrich (không cần Kafka hay GeoIP DB thật). Chạy: python test_enrich.py"""
 import geoip2.errors
 
 import enrich as enrich_mod

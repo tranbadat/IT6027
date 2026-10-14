@@ -1,6 +1,6 @@
 """Parse định dạng waf_combined của Nginx/Apache (combined + host, rt, sid).
 
-Tách riêng để unit test không cần RabbitMQ.
+Tách riêng để unit test không cần Kafka.
 """
 import datetime
 import re

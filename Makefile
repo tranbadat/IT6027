@@ -4,8 +4,8 @@ REDOCLY_IMAGE := redocly/cli:1.34.5
 NGINX_LOG_DIR := /var/log/waf/nginx
 
 .DEFAULT_GOAL := help
-.PHONY: help init config up down restart ps logs clean smoke e2e net build deploy-init deploy-up deploy-down deploy-ps obs-up obs-down demo demo-apache test-alert build-base \
-        tail-logs rotate-logs mock-reload bus-topology bus-purge geoip lint-contracts
+.PHONY: help init config up down restart ps logs clean smoke e2e test test-python test-java net build deploy-init deploy-up deploy-down deploy-ps obs-up obs-down demo demo-apache test-alert build-base \
+        tail-logs rotate-logs mock-reload bus-topology bus-purge bus-peek geoip lint-contracts
 
 help: ## Liệt kê các lệnh
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -42,6 +42,18 @@ smoke: ## Kiểm tra nhanh toàn bộ hạ tầng
 
 e2e: ## Kiểm thử end-to-end toàn pipeline (cần chạy đủ service)
 	@./scripts/e2e-test.sh
+
+test: test-python test-java ## Chạy toàn bộ unit test (Python trong image nền, Java bằng Maven)
+
+test-python: build-base ## Unit test các service Python
+	@docker run --rm -v "$(CURDIR)/services:/app:ro" waf/base:dev sh -ec '\
+	  cd /app && python -B -m common.test_bus; \
+	  for t in /app/*/test_*.py; do d=$$(dirname $$t); [ "$$d" = /app/common ] && continue; echo "== $$t"; \
+	    (cd $$d && PYTHONPATH=/app:$$d python -B $$t) || exit 1; done'
+
+test-java: ## Unit test detector Java (Maven trong container)
+	docker run --rm -v "$(CURDIR)/services/detector:/w" -v "$$HOME/.m2:/root/.m2" -w /w \
+		maven:3.9.11-eclipse-temurin-17 mvn -q -B test
 
 # ── Triển khai tách 3 stack (Loại 1 Sensor / Loại 2 Pipeline / Loại 3 Platform) ──
 net: ## Tạo network dùng chung waf-net (một lần)
@@ -94,13 +106,21 @@ rotate-logs: ## Giả lập log rotation của Nginx (để kiểm thử C1)
 mock-reload: ## Nạp lại allowlist của mock Scope sau khi sửa
 	$(COMPOSE) exec mock-api nginx -s reload
 
-bus-topology: ## Nạp lại exchange/queue/binding của RabbitMQ
-	$(COMPOSE) exec -T --user rabbitmq rabbitmq sh /etc/rabbitmq/waf/load-topology.sh
+bus-topology: ## Tạo các topic Kafka còn thiếu (idempotent, infra/kafka/create-topics.sh)
+	$(COMPOSE) run --rm kafka-init
 
-bus-purge: ## Xoá hết message đang chờ trong các queue
-	@for q in $$(jq -r '.queues[].name' infra/rabbitmq/definitions.json); do \
-		$(COMPOSE) exec -T --user rabbitmq rabbitmq rabbitmqctl purge_queue -q "$$q" && echo "purged $$q"; \
+bus-purge: ## Xoá rồi tạo lại mọi topic sự kiện (mất toàn bộ message, giữ rules.changed)
+	@for t in log.raw.ingested log.normalized log.enriched attack.detected anomaly.scored \
+	          alert.triggered stage.completed log.enriched.by-domain waf.deadletter; do \
+		$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 \
+			--delete --if-exists --topic "$$t" && echo "deleted $$t"; \
 	done
+	@sleep 3; $(COMPOSE) run --rm kafka-init >/dev/null && echo "đã tạo lại topic"
+
+bus-peek: ## Xem tối đa 5 message từ đầu topic: make bus-peek t=alert.triggered
+	$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 \
+		--topic $(or $(t),log.enriched) --from-beginning --max-messages 5 --timeout-ms 5000 \
+		--property print.key=true
 
 geoip: ## Tải GeoIP DB (DB-IP Lite) cho C3
 	@./scripts/fetch-geoip.sh
@@ -108,5 +128,5 @@ geoip: ## Tải GeoIP DB (DB-IP Lite) cho C3
 lint-contracts: ## Lint OpenAPI và kiểm tra cú pháp các file JSON contract
 	docker run --rm -v "$(CURDIR)/contracts:/spec:ro" $(REDOCLY_IMAGE) \
 		lint --config /spec/redocly.yaml /spec/openapi/scope.yaml /spec/openapi/auth.yaml
-	@jq empty contracts/events/*.json contracts/events/examples/*.json infra/rabbitmq/definitions.json \
+	@jq empty contracts/events/*.json contracts/events/examples/*.json \
 		&& echo "JSON hợp lệ"

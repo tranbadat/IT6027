@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/tranbadat/IT6027/contracts/events/envelope.schema.json",
   "title": "WAF Log Analyzer event envelope",
-  "description": "Vỏ chung cho mọi event trên exchange waf.events. Nội dung `data` do module phát event định nghĩa (xem contracts/events/README.md).",
+  "description": "Vỏ chung cho mọi event trên Kafka (topic = tên event). Nội dung `data` do module phát event định nghĩa (xem contracts/events/README.md).",
   "type": "object",
   "additionalProperties": false,
   "required": ["event", "event_id", "timestamp", "source", "domain", "data"],
