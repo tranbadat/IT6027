@@ -77,7 +77,7 @@ public final class EnvelopeFactory {
         if (!result.attackTypes().isEmpty()) return result.attackTypes();
         return result.anomalyReasons().stream()
                 .map(reason -> switch (reason) {
-                    case "request_burst" -> "traffic_flood";
+                    case "request_burst", "request_flood" -> "traffic_flood";
                     case "http_error_burst" -> "error_scan";
                     case "path_scan" -> "path_scan";
                     case "distributed_request_burst" -> "ddos";

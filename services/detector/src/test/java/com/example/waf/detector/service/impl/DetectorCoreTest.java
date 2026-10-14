@@ -164,4 +164,16 @@ class DetectorCoreTest {
         assertEquals(0, result.window().get("distinct_paths"));
         assertFalse(result.alert());
     }
+
+    @Test
+    void singleSourceFloodWithoutPayloadOrErrorsRaisesAlert() {
+        RequestDetectionServiceImpl detector = requestDetector();
+        DetectionResult result = null;
+        for (int index = 0; index < 99; index++)
+            result = detector.analyze(event("f" + index, "2026-10-04T08:00:00Z", "11", "/", "", 200));
+        assertFalse(result.alert(), "99 request/phút chưa phải flood");
+        result = detector.analyze(event("f99", "2026-10-04T08:00:01Z", "11", "/", "", 200));
+        assertTrue(result.alert(), result.toString());
+        assertTrue(result.anomalyReasons().contains("request_flood"), result.toString());
+    }
 }

@@ -1,0 +1,31 @@
+# Mốc so sánh: ModSecurity v3 + OWASP CRS 4 (LTS) ở chế độ CHỈ PHÁT HIỆN, đặt trước một backend echo.
+# Nhận cùng tập request có nhãn (experiments/traffic.py --target http://127.0.0.1:8088) và ghi audit log
+# JSON ra stdout; experiments/modsec_eval.py đọc `docker compose logs modsec` để biết request nào bị
+# CRS đánh dấu (rule 949110: tổng điểm bất thường >= ngưỡng).
+name: waf-modsec-baseline
+
+services:
+  backend:
+    image: mendhak/http-https-echo:37
+    environment:
+      HTTP_PORT: "8080"
+      HTTPS_PORT: "8443"
+      LOG_WITHOUT_NEWLINE: "true"
+      LOG_IGNORE_PATH: "/"
+
+  modsec:
+    image: owasp/modsecurity-crs:4.25.2-nginx-alpine-lts
+    depends_on: [backend]
+    environment:
+      BACKEND: http://backend:8080
+      MODSEC_RULE_ENGINE: DetectionOnly
+      BLOCKING_PARANOIA: "1"
+      ANOMALY_INBOUND: "5"
+      ANOMALY_OUTBOUND: "4"
+      MODSEC_AUDIT_ENGINE: RelevantOnly
+      MODSEC_AUDIT_LOG_FORMAT: JSON
+      MODSEC_AUDIT_LOG: /dev/stdout
+      MODSEC_AUDIT_LOG_PARTS: ABHZ
+      MODSEC_REQ_BODY_ACCESS: "on"
+    ports:
+      - "127.0.0.1:${MODSEC_PORT:-8088}:8080"

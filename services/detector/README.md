@@ -29,10 +29,13 @@ Một image `waf/detector:dev`, chạy theo role (tham số đầu tiên hoặc 
 | Rule khớp | trọng số lớn nhất trong các rule khớp (critical 95, high 85, medium 65) |
 | Nhiều rule cùng khớp | +10 cho mỗi rule khớp thêm |
 | Số request ≥ `REQUEST_THRESHOLD` (20) | +30 (`request_burst`, cảnh báo dạng `traffic_flood`) |
+| Số request ≥ `FLOOD_THRESHOLD` (100) | thêm +40 (`request_flood`, dạng `traffic_flood`) |
 | Số phản hồi lỗi ≥ `ERROR_THRESHOLD` (8) | +25 (`http_error_burst`, dạng `error_scan`) |
 | Số path khác nhau ≥ `DISTINCT_PATH_THRESHOLD` (12) | +25 (`path_scan`) |
 
-Tổng chặn ở 100. Cảnh báo khi điểm ≥ `ALERT_SCORE_THRESHOLD` (70); cùng một client cách nhau tối thiểu `RULE_ALERT_COOLDOWN_SECONDS` (15 giây). Nhờ ba tín hiệu hành vi, một nguồn dò quét không chứa payload vẫn có thể đạt ngưỡng (30 + 25 + 25 = 80).
+Tổng chặn ở 100. Cảnh báo khi điểm ≥ `ALERT_SCORE_THRESHOLD` (70); cùng một client cách nhau tối thiểu `RULE_ALERT_COOLDOWN_SECONDS` (15 giây). Tệp tĩnh (`.css`, `.js`, ảnh, `favicon.ico`...) vẫn tính vào số request nhưng không tính vào số lỗi và số path khác nhau, để một lần tải trang có ảnh lỗi 404 không bị coi là dò quét.
+
+Nhờ tín hiệu hành vi, nguồn không mang payload vẫn có thể đạt ngưỡng: dò quét 30 + 25 + 25 = 80, flood từ một nguồn 30 + 40 = 70. Tín hiệu `request_flood` được bổ sung sau lượt thực nghiệm đầu ([experiments/](../../experiments/README.md)): trước đó một nguồn gửi 150-200 request/phút không lỗi, cùng một path, chỉ đạt 30 điểm và không bao giờ bị cảnh báo. Flood phân tán từ nhiều IP do vai trò `ddos` xử lý riêng.
 
 ## Rule
 

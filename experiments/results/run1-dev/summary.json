@@ -1,0 +1,224 @@
+{
+  "requests": 1973,
+  "pipeline_coverage": 0.9954,
+  "unobservable": {
+    "count": 9,
+    "statuses": [
+      400
+    ],
+    "categories": [
+      "path_traversal"
+    ]
+  },
+  "sources": {
+    "benign_api_poller": 3,
+    "benign_crawler": 2,
+    "benign_visitor": 80,
+    "flooder": 2,
+    "payload_attacker": 30,
+    "scanner": 4
+  },
+  "request_level": {
+    "A": {
+      "tp": 274,
+      "fp": 6,
+      "fn": 19,
+      "tn": 1080,
+      "precision": 0.9786,
+      "recall": 0.9352,
+      "fpr": 0.0055,
+      "f1": 0.9564
+    },
+    "C": {
+      "tp": 274,
+      "fp": 6,
+      "fn": 19,
+      "tn": 1080,
+      "precision": 0.9786,
+      "recall": 0.9352,
+      "fpr": 0.0055,
+      "f1": 0.9564
+    },
+    "live": {
+      "tp": 274,
+      "fp": 6,
+      "fn": 19,
+      "tn": 1080,
+      "precision": 0.9786,
+      "recall": 0.9352,
+      "fpr": 0.0055,
+      "f1": 0.9564
+    },
+    "CRS": {
+      "tp": 221,
+      "fp": 6,
+      "fn": 72,
+      "tn": 1080,
+      "precision": 0.9736,
+      "recall": 0.7543,
+      "fpr": 0.0055,
+      "f1": 0.85
+    }
+  },
+  "request_level_by_category": {
+    "A": {
+      "command_injection": 1.0,
+      "lfi": 1.0,
+      "log4shell": 1.0,
+      "path_traversal": 1.0,
+      "rfi": 1.0,
+      "sensitive_file": 1.0,
+      "sql_injection": 0.7949,
+      "ssti": 0.625,
+      "xss": 0.75
+    },
+    "C": {
+      "command_injection": 1.0,
+      "lfi": 1.0,
+      "log4shell": 1.0,
+      "path_traversal": 1.0,
+      "rfi": 1.0,
+      "sensitive_file": 1.0,
+      "sql_injection": 0.7949,
+      "ssti": 0.625,
+      "xss": 0.75
+    },
+    "live": {
+      "command_injection": 1.0,
+      "lfi": 1.0,
+      "log4shell": 1.0,
+      "path_traversal": 1.0,
+      "rfi": 1.0,
+      "sensitive_file": 1.0,
+      "sql_injection": 0.7949,
+      "ssti": 0.625,
+      "xss": 0.75
+    },
+    "CRS": {
+      "command_injection": 0.85,
+      "lfi": 1.0,
+      "log4shell": 1.0,
+      "path_traversal": 0.8857,
+      "rfi": 0.0,
+      "sensitive_file": 1.0,
+      "sql_injection": 1.0,
+      "ssti": 0.375,
+      "xss": 1.0
+    }
+  },
+  "source_level": {
+    "A": {
+      "tp": 32,
+      "fp": 6,
+      "fn": 4,
+      "tn": 79,
+      "precision": 0.8421,
+      "recall": 0.8889,
+      "fpr": 0.0706,
+      "f1": 0.8649,
+      "by_actor": {
+        "benign_api_poller": "0/3",
+        "benign_crawler": "1/2",
+        "benign_visitor": "5/80",
+        "flooder": "0/2",
+        "payload_attacker": "30/30",
+        "scanner": "2/4"
+      },
+      "median_seconds_to_first_alert": 0.0,
+      "alerts": 95
+    },
+    "B": {
+      "tp": 4,
+      "fp": 0,
+      "fn": 32,
+      "tn": 85,
+      "precision": 1.0,
+      "recall": 0.1111,
+      "fpr": 0.0,
+      "f1": 0.2,
+      "by_actor": {
+        "benign_api_poller": "0/3",
+        "benign_crawler": "0/2",
+        "benign_visitor": "0/80",
+        "flooder": "0/2",
+        "payload_attacker": "0/30",
+        "scanner": "4/4"
+      },
+      "median_seconds_to_first_alert": 7.8,
+      "alerts": 4
+    },
+    "C": {
+      "tp": 34,
+      "fp": 6,
+      "fn": 2,
+      "tn": 79,
+      "precision": 0.85,
+      "recall": 0.9444,
+      "fpr": 0.0706,
+      "f1": 0.8947,
+      "by_actor": {
+        "benign_api_poller": "0/3",
+        "benign_crawler": "1/2",
+        "benign_visitor": "5/80",
+        "flooder": "0/2",
+        "payload_attacker": "30/30",
+        "scanner": "4/4"
+      },
+      "median_seconds_to_first_alert": 0.0,
+      "alerts": 99
+    },
+    "live": {
+      "tp": 34,
+      "fp": 6,
+      "fn": 2,
+      "tn": 79,
+      "precision": 0.85,
+      "recall": 0.9444,
+      "fpr": 0.0706,
+      "f1": 0.8947,
+      "by_actor": {
+        "benign_api_poller": "0/3",
+        "benign_crawler": "1/2",
+        "benign_visitor": "5/80",
+        "flooder": "0/2",
+        "payload_attacker": "30/30",
+        "scanner": "4/4"
+      },
+      "median_seconds_to_first_alert": 0.0,
+      "alerts": 99
+    },
+    "CRS (≥1 request bị đánh dấu)": {
+      "tp": 34,
+      "fp": 6,
+      "fn": 2,
+      "tn": 79,
+      "precision": 0.85,
+      "recall": 0.9444,
+      "fpr": 0.0706,
+      "f1": 0.8947,
+      "by_actor": {
+        "benign_api_poller": "0/3",
+        "benign_crawler": "1/2",
+        "benign_visitor": "5/80",
+        "flooder": "0/2",
+        "payload_attacker": "30/30",
+        "scanner": "4/4"
+      }
+    }
+  },
+  "requests_by_category": {
+    "benign": 1086,
+    "command_injection": 20,
+    "flood": 388,
+    "lfi": 34,
+    "log4shell": 33,
+    "path_traversal": 44,
+    "rfi": 55,
+    "scan": 197,
+    "sensitive_file": 41,
+    "sql_injection": 39,
+    "ssti": 16,
+    "xss": 20
+  },
+  "crs_flagged_scan_flood_requests": 111
+}

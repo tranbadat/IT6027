@@ -7,7 +7,16 @@ public record DetectorConfig(Request request, Ddos ddos, int maxFutureSkewSecond
     // Khai báo record Request
     public record Request(int windowSeconds, int requestThreshold, int errorThreshold,
                           int distinctPathThreshold, int alertThreshold,
-                          int cooldownSeconds, int maxTrackedClients) {}
+                          int cooldownSeconds, int maxTrackedClients, int floodThreshold) {
+        /** Số request trong cửa sổ để coi là flood từ một nguồn (tự đủ để cảnh báo). */
+        public static final int DEFAULT_FLOOD_THRESHOLD = 100;
+
+        public Request(int windowSeconds, int requestThreshold, int errorThreshold, int distinctPathThreshold,
+                       int alertThreshold, int cooldownSeconds, int maxTrackedClients) {
+            this(windowSeconds, requestThreshold, errorThreshold, distinctPathThreshold, alertThreshold,
+                    cooldownSeconds, maxTrackedClients, DEFAULT_FLOOD_THRESHOLD);
+        }
+    }
 
     // Khai báo record DDOS
     public record Ddos(int windowSeconds, int requestThreshold, int uniqueIpThreshold,
@@ -22,7 +31,8 @@ public record DetectorConfig(Request request, Ddos ddos, int maxFutureSkewSecond
                 EnvironmentUtils.positiveInt("DISTINCT_PATH_THRESHOLD", 12),
                 EnvironmentUtils.boundedInt("ALERT_SCORE_THRESHOLD", 70, 1, 100),
                 EnvironmentUtils.positiveInt("RULE_ALERT_COOLDOWN_SECONDS", 15),
-                EnvironmentUtils.positiveInt("MAX_TRACKED_CLIENTS", 100_000));
+                EnvironmentUtils.positiveInt("MAX_TRACKED_CLIENTS", 100_000),
+                EnvironmentUtils.positiveInt("FLOOD_THRESHOLD", Request.DEFAULT_FLOOD_THRESHOLD));
         Ddos ddos = new Ddos(
                 EnvironmentUtils.positiveInt("DDOS_WINDOW_SECONDS", 10),
                 EnvironmentUtils.positiveInt("DDOS_REQUESTS_THRESHOLD", 300),

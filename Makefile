@@ -5,7 +5,7 @@ NGINX_LOG_DIR := /var/log/waf/nginx
 
 .DEFAULT_GOAL := help
 .PHONY: help init config up down restart ps logs clean smoke e2e test test-python test-java net build deploy-init deploy-up deploy-down deploy-ps obs-up obs-down demo demo-apache test-alert build-base \
-        tail-logs rotate-logs mock-reload bus-topology bus-purge bus-peek geoip lint-contracts
+        tail-logs rotate-logs mock-reload bus-topology bus-purge bus-peek geoip lint-contracts experiment loadtest
 
 help: ## Liệt kê các lệnh
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -122,6 +122,12 @@ bus-peek: ## Xem tối đa 5 message từ đầu topic: make bus-peek t=alert.tr
 	$(COMPOSE) exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 \
 		--topic $(or $(t),log.enriched) --from-beginning --max-messages 5 --timeout-ms 5000 \
 		--property print.key=true
+
+experiment: ## Thực nghiệm A/B/C + mốc ModSecurity CRS trên hệ thống đang chạy (experiments/README.md)
+	@./experiments/run.sh
+
+loadtest: ## Kiểm thử tải: ghi dồn LINES dòng log (mặc định 20000), đo thông lượng từng khâu
+	@python3 experiments/loadtest.py --lines $(or $(LINES),20000)
 
 geoip: ## Tải GeoIP DB (DB-IP Lite) cho C3
 	@./scripts/fetch-geoip.sh

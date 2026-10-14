@@ -21,6 +21,8 @@ import java.util.regex.Pattern;
 
 public final class RequestDetectionServiceImpl implements RequestDetectionService {
     static final int CORROBORATION_BONUS = 10;
+    /** Flood từ một nguồn: cộng thêm vào request_burst (30) để tự đạt ngưỡng cảnh báo mặc định 70. */
+    static final int FLOOD_POINTS = 40;
     /**
      * Tệp tĩnh lành tính: vẫn tính vào số request nhưng KHÔNG tính vào số lỗi và số path khác nhau,
      * để một lần tải trang (CSS/JS/ảnh) hay favicon.ico trả 404 không bị coi là dò quét.
@@ -99,6 +101,10 @@ public final class RequestDetectionServiceImpl implements RequestDetectionServic
         if (window.requests >= config.requestThreshold()) {
             score += 30;
             reasons.add("request_burst");
+        }
+        if (window.requests >= config.floodThreshold()) {
+            score += FLOOD_POINTS;
+            reasons.add("request_flood");
         }
         if (window.errors >= config.errorThreshold()) {
             score += 25;
