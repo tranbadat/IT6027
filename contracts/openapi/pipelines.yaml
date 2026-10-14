@@ -1,0 +1,142 @@
+openapi: 3.1.0
+info:
+  title: P3 Pipeline Orchestration
+  version: 0.2.0
+  description: |
+    Trạng thái xử lý của pipeline. P3 đọc 6 topic `log.raw.ingested`, `log.normalized`, `log.enriched`,
+    `attack.detected`, `anomaly.scored`, `alert.triggered` (consumer group `p3-orchestrator`),
+    đếm theo cặp (domain, stage) và định kỳ phát `stage.completed`. Cấu hình pipeline đọc từ các
+    file YAML trong `config/pipelines/`.
+
+    - Gọi từ ngoài qua gateway: `http://localhost:8080/api/pipelines/` (cần JWT). Gateway bỏ tiền tố `/api`.
+    - Gọi nội bộ: `http://p3-orchestrator:8000/pipelines`.
+  license:
+    name: Internal
+    identifier: LicenseRef-Internal
+servers:
+  - url: http://localhost:8080/api
+    description: Qua API gateway (JWT)
+  - url: http://p3-orchestrator:8000
+    description: Nội bộ network
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+tags:
+  - name: pipelines
+    description: Cấu hình và trạng thái pipeline
+paths:
+  /pipelines:
+    get:
+      tags: [pipelines]
+      operationId: listPipelines
+      summary: Cấu hình pipeline đã nạp và bộ đếm theo từng stage
+      responses:
+        '200':
+          description: Cấu hình và trạng thái hiện tại.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelinesResponse'
+              example:
+                pipelines:
+                  - pipeline: shop.local
+                    domain: shop.local
+                    stages: [ingestion, normalize, enrich, detect, score, alert]
+                runtime:
+                  - domain: shop.local
+                    stage: detect
+                    count: 42
+                    last_event_at: '2026-10-14T03:53:33.120000+00:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /healthz:
+    servers:
+      - url: http://p3-orchestrator:8000
+        description: Chỉ gọi nội bộ (healthcheck của container)
+    get:
+      tags: [pipelines]
+      operationId: pipelinesHealth
+      summary: Kiểm tra service còn chạy
+      security: []
+      responses:
+        '200':
+          description: Service đang chạy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: waf_token
+  schemas:
+    Pipeline:
+      type: object
+      required: [pipeline, domain, stages]
+      properties:
+        pipeline:
+          type: string
+          description: Tên pipeline (khoá `pipeline` trong YAML, mặc định là tên file).
+        domain:
+          type: string
+          description: Domain theo dõi (mặc định bằng tên pipeline).
+        stages:
+          type: array
+          items:
+            type: string
+    StageRuntime:
+      type: object
+      required: [domain, stage, count]
+      properties:
+        domain:
+          type: string
+        stage:
+          type: string
+          description: Stage suy từ loại event (ingestion, normalize, enrich, detect, score, alert).
+        count:
+          type: integer
+          minimum: 0
+          description: Tổng số event đã nhận từ khi service khởi động.
+        last_event_at:
+          type: [string, 'null']
+          description: timestamp của event gần nhất (RFC 3339).
+    PipelinesResponse:
+      type: object
+      required: [pipelines, runtime]
+      properties:
+        pipelines:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pipeline'
+        runtime:
+          type: array
+          items:
+            $ref: '#/components/schemas/StageRuntime'
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    GatewayError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+  responses:
+    Unauthorized:
+      description: Thiếu hoặc sai token (khi gọi qua gateway).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayError'

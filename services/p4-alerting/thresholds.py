@@ -30,7 +30,8 @@ def parse_thresholds(raw: str | None) -> dict[str, float]:
     return result
 
 
-def resolve_threshold(thresholds: dict[str, float], domain: str, fallback: float) -> float:
+def resolve_threshold(thresholds: dict[str, float], domain: str,
+                      fallback: float | None) -> float | None:
     """Trả ngưỡng áp dụng cho domain: ưu tiên cấu hình riêng, rồi khoá mặc định, rồi fallback."""
     if domain in thresholds:
         return thresholds[domain]

@@ -38,8 +38,9 @@ make deploy-down    # dừng cả 3 (giữ dữ liệu)
 
 Trên máy/host của app cần giám sát:
 
-1. Bảo đảm app-domain nằm trong **scope**: thêm vào `SCOPE_ALLOWLIST` của Platform, hoặc gọi
+1. Bảo đảm app-domain nằm trong **scope**: thêm ở dashboard (mục **Domain**) hoặc gọi
    `POST http://<hub>:8080/api/scope/allowlist` (cần JWT) với `{"target":"myapp.com"}`.
+   `SCOPE_ALLOWLIST` của Platform chỉ dùng để tạo dữ liệu ban đầu khi bảng allowlist còn trống; với DB đã có dữ liệu phải thêm qua dashboard hoặc API.
 2. (Tuỳ chọn) Cho log giàu thông tin hơn: thêm `deploy/sensor/waf-logformat.conf` vào Nginx của app và
    trỏ `access_log ... waf_combined`. Bỏ qua cũng được — sensor parse được log **combined chuẩn**.
 3. Cấu hình `deploy/sensor/.env`:

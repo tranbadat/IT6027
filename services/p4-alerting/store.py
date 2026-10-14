@@ -10,9 +10,10 @@ HISTORY_CAP = 500
 
 _COUNTER_NAMES = (
     "anomalies",          # tổng anomaly.scored nhận được
-    "anomalies_flagged",  # anomaly vượt ngưỡng (chỉ đánh dấu, không gửi mail)
-    "alerts",             # alert.triggered đã đưa vào lịch sử
+    "anomalies_flagged",  # anomaly đạt ngưỡng riêng của domain (được gửi cảnh báo)
+    "alerts",             # cảnh báo đã đưa vào lịch sử
     "alerts_suppressed",  # alert bị bỏ do trùng/cooldown
+    "alerts_below_threshold",  # alert.triggered thấp hơn ngưỡng riêng của domain
     "emails_sent",
     "emails_failed",
     "webhooks_sent",

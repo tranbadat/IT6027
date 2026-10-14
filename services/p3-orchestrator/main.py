@@ -2,7 +2,7 @@
 
 Theo dõi tiến độ xử lý toàn pipeline qua event bus và expose trạng thái qua HTTP.
 
-- Thread consumer (kết nối bus riêng): nhận log.# + attack.detected + anomaly.scored
+- Thread consumer (client Kafka riêng): nhận log.raw.ingested, log.normalized, log.enriched, attack.detected, anomaly.scored
   + alert.triggered, tăng bộ đếm theo (domain, stage).
 - Thread publisher (client Kafka RIÊNG, tách khỏi thread consumer):
   định kỳ publish stage.completed cho mỗi (domain, stage) có thay đổi.

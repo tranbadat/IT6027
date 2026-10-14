@@ -46,8 +46,13 @@ def _persist(alert, repo, store) -> None:
         log.warning("persist alert failed", error=str(exc), event_id=alert.get("event_id"))
 
 
-def _on_alert(env, store, cooldown, smtp_cfg, webhook_url, repo) -> None:
-    alert = alerts_mod.build_alert(env)
+def _configured_threshold(thresholds, domain):
+    """Ngưỡng cấu hình cho domain (kể cả khoá mặc định "*"); None nếu không cấu hình."""
+    return thresholds_mod.resolve_threshold(thresholds, domain or "", None)
+
+
+def _notify(alert, store, cooldown, smtp_cfg, webhook_url, repo) -> None:
+    """Chống gửi trùng theo (domain, src_ip, loại tấn công chính), lưu lịch sử rồi gửi email/webhook."""
     key = alerts_mod.dedup_key(alert)
     if not cooldown.allow(key):
         store.incr("alerts_suppressed")
@@ -61,27 +66,48 @@ def _on_alert(env, store, cooldown, smtp_cfg, webhook_url, repo) -> None:
     _deliver(alert, smtp_cfg, webhook_url, store)
 
 
-def _on_anomaly(env, store, thresholds) -> None:
-    """anomaly.scored: chỉ ghi nhận, KHÔNG gửi mail (tránh trùng với alert.triggered)."""
+def _on_alert(env, store, cooldown, thresholds, smtp_cfg, webhook_url, repo) -> None:
+    """alert.triggered: gửi nếu điểm đạt ngưỡng riêng của domain (khi có cấu hình), ngược lại gửi như cũ."""
     data = env.get("data") or {}
     score = data.get("score")
-    event_threshold = data.get("threshold")
-    fallback = event_threshold if isinstance(event_threshold, (int, float)) else float("inf")
-    threshold = thresholds_mod.resolve_threshold(thresholds, env.get("domain", ""), fallback)
-    flagged = isinstance(score, (int, float)) and score >= threshold
+    configured = _configured_threshold(thresholds, env.get("domain"))
+    if configured is not None and isinstance(score, (int, float)) and score < configured:
+        store.incr("alerts_below_threshold")
+        log.info("alert below domain threshold", domain=env.get("domain"), score=score,
+                 threshold=configured)
+        return
+    alert = alerts_mod.build_alert(env)
+    if configured is not None:
+        alert = {**alert, "threshold": configured}
+    _notify(alert, store, cooldown, smtp_cfg, webhook_url, repo)
+
+
+def _on_anomaly(env, store, cooldown, thresholds, smtp_cfg, webhook_url, repo) -> None:
+    """anomaly.scored: chỉ đếm, trừ khi domain có ngưỡng riêng và điểm đạt ngưỡng đó.
+
+    Cho phép domain nhạy cảm cảnh báo sớm hơn ngưỡng chung của detector. Cùng request còn phát
+    alert.triggered thì cooldown ở _notify chặn email thứ hai.
+    """
+    data = env.get("data") or {}
+    score = data.get("score")
     store.incr("anomalies")
-    if flagged:
-        store.incr("anomalies_flagged")
-        log.debug("anomaly flagged", domain=env.get("domain"), score=score, threshold=threshold)
+    configured = _configured_threshold(thresholds, env.get("domain"))
+    if configured is None or not isinstance(score, (int, float)) or score < configured:
+        return
+    store.incr("anomalies_flagged")
+    reasons = data.get("reasons") or []
+    alert = {**alerts_mod.build_alert(env), "threshold": configured,
+             "reason": f"score {score} >= ngưỡng domain {configured}; signals={list(reasons)}"}
+    _notify(alert, store, cooldown, smtp_cfg, webhook_url, repo)
 
 
 def build_handler(store, cooldown, thresholds, smtp_cfg, webhook_url, repo=None):
     def handle(env: dict, routing_key: str) -> None:
         event = env.get("event")
         if event == "alert.triggered":
-            _on_alert(env, store, cooldown, smtp_cfg, webhook_url, repo)
+            _on_alert(env, store, cooldown, thresholds, smtp_cfg, webhook_url, repo)
         elif event == "anomaly.scored":
-            _on_anomaly(env, store, thresholds)
+            _on_anomaly(env, store, cooldown, thresholds, smtp_cfg, webhook_url, repo)
         else:
             log.debug("ignore event", event=event)
 

@@ -80,6 +80,7 @@ deploy-ps: ## Trạng thái cả 3 stack
 	@for s in platform pipeline sensor; do echo "== $$s =="; (cd deploy/$$s && docker compose ps) ; done
 
 obs-up: net build deploy-init ## Dựng stack quan sát (Prometheus + Grafana + exporter)
+	$(COMPOSE) --profile obs build metrics-exporter
 	cd deploy/observability && docker compose up -d --wait
 	@echo "Grafana: http://localhost:3000  ·  Prometheus: http://localhost:9090"
 
@@ -127,6 +128,7 @@ geoip: ## Tải GeoIP DB (DB-IP Lite) cho C3
 
 lint-contracts: ## Lint OpenAPI và kiểm tra cú pháp các file JSON contract
 	docker run --rm -v "$(CURDIR)/contracts:/spec:ro" $(REDOCLY_IMAGE) \
-		lint --config /spec/redocly.yaml /spec/openapi/scope.yaml /spec/openapi/auth.yaml
+		lint --config /spec/redocly.yaml /spec/openapi/scope.yaml /spec/openapi/auth.yaml \
+		/spec/openapi/rules.yaml /spec/openapi/pipelines.yaml /spec/openapi/alerting.yaml /spec/openapi/dashboard.yaml
 	@jq empty contracts/events/*.json contracts/events/examples/*.json \
 		&& echo "JSON hợp lệ"

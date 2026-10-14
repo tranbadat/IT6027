@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: P1 Scope Service
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Xác nhận một domain hoặc ứng dụng có nằm trong phạm vi được phép xử lý log hay không.
     Mọi service (C1–C3, D1–D3) PHẢI gọi `GET /scope/check` trước khi xử lý log của một domain mới,
@@ -75,6 +75,88 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /scope/allowlist:
+    get:
+      tags: [scope]
+      operationId: listAllowlist
+      summary: Danh sách domain/ứng dụng trong phạm vi (chỉ có ở P1 thật, không có ở mock)
+      responses:
+        '200':
+          description: Toàn bộ allowlist, sắp theo target.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AllowlistItem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [scope]
+      operationId: upsertAllowlist
+      summary: Thêm hoặc cập nhật một mục allowlist
+      description: |
+        target được chuyển về chữ thường. Nếu không truyền target_type, giá trị chứa dấu chấm được coi là
+        `domain`, ngược lại là `app`. Mục đã tồn tại được cập nhật (upsert).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AllowlistUpsert'
+            example:
+              target: myapp.com
+              enabled: true
+              note: App mới cần giám sát
+      responses:
+        '200':
+          description: Mục đã được lưu.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [target, target_type, enabled]
+                properties:
+                  target: {type: string}
+                  target_type: {type: string, enum: [domain, app]}
+                  enabled: {type: boolean}
+        '400':
+          description: target không hợp lệ.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail: {type: string, example: invalid target}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /scope/allowlist/{target}:
+    delete:
+      tags: [scope]
+      operationId: deleteAllowlist
+      summary: Xoá một mục allowlist (không báo lỗi nếu không tồn tại)
+      parameters:
+        - name: target
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Đã xoá (target đã chuyển về chữ thường).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: {type: string}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 components:
   securitySchemes:
     bearerAuth:
@@ -106,6 +188,29 @@ components:
           type: integer
           minimum: 0
           description: Thời gian client được phép cache kết quả.
+    AllowlistItem:
+      type: object
+      required: [target, target_type, enabled]
+      properties:
+        target: {type: string}
+        target_type: {type: string, enum: [domain, app]}
+        enabled: {type: boolean}
+        note: {type: [string, 'null']}
+    AllowlistUpsert:
+      type: object
+      required: [target]
+      properties:
+        target:
+          type: string
+          pattern: '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$'
+        target_type:
+          type: string
+          enum: [domain, app]
+        enabled:
+          type: boolean
+          default: true
+        note:
+          type: string
     Error:
       type: object
       required: [error, message]

@@ -14,7 +14,7 @@ Mỗi module là một thư mục `services/<tên-service>/`, có `Dockerfile` r
 | `detector` (`repartitioner`, `ddos-detector`) | DDoS | 2 | Java 17 | `ddos` | consumer | `log.enriched`, `log.enriched.by-domain` | — |
 | `p1-scope` | P1 | 3 | Python | `p1`, `platform` | HTTP | — | — |
 | `p2-auth` | P2 | 3 | Python | `p2`, `platform` | HTTP | — | — |
-| `p3-orchestrator` | P3 | 3 | Python | `p3`, `platform` | consumer + HTTP | `log.*`, `attack.detected`, `anomaly.scored`, `alert.triggered` | `/config/pipelines` (ro) |
+| `p3-orchestrator` | P3 | 3 | Python | `p3`, `platform` | consumer + HTTP | `log.raw.ingested`, `log.normalized`, `log.enriched`, `attack.detected`, `anomaly.scored`, `alert.triggered` | `/config/pipelines` (ro) |
 | `p4-alerting` | P4 | 3 | Python | `p4`, `platform` | consumer + HTTP | `anomaly.scored`, `alert.triggered` | — |
 | `p5-dashboard` | P5 | 3 | Python | `p5`, `platform` | consumer + HTTP | `log.enriched`, `attack.detected`, `anomaly.scored`, `alert.triggered`, `stage.completed` | — |
 | `metrics-exporter` | quan sát | 3 | Python | `obs` | consumer + HTTP | mọi topic sự kiện | — |
@@ -24,13 +24,14 @@ Profile `app` bật toàn bộ pipeline (C1–C3, detector + rule-api, P1–P5).
 ## Quy ước
 
 - **Ngôn ngữ tự chọn.** Chỉ cần `Dockerfile` build được từ chính thư mục service.
-- **HTTP** lắng nghe cổng `8000` (biến `HTTP_PORT`) và có `GET /healthz` trả 200. Khai báo `HEALTHCHECK` trong Dockerfile.
+- **HTTP** lắng nghe cổng `8000` (biến `HTTP_PORT`) và có `GET /healthz` trả 200, khai báo `HEALTHCHECK` trong Dockerfile. Ngoại lệ: metrics-exporter chỉ có `/metrics` (healthcheck gọi `/metrics`), rule-api có `/health` ở cổng 8090.
 - **Chạy bằng user không phải root** (`USER` trong Dockerfile).
 - **Cấu hình chỉ đọc từ biến môi trường**, không hardcode địa chỉ hay mật khẩu.
 - **Log ra stdout**, xem bằng `make logs s=<tên-service>`.
-- **Phải gọi `GET $SCOPE_SERVICE_URL/scope/check`** trước khi xử lý log của một domain mới. Được phép cache theo `cache_ttl_seconds`.
+- **Service xử lý nội dung log (C1–C3, detector) phải gọi `GET $SCOPE_SERVICE_URL/scope/check`** trước khi xử lý log của một domain mới. Được phép cache theo `cache_ttl_seconds`. P3–P5 và metrics-exporter chỉ đọc event đã được C1 xác nhận scope (trường `domain` của envelope).
 - **Event theo [`contracts/events`](../contracts/events/README.md).** Service Python dùng [`common/bus.py`](common/bus.py): `bus.publish(...)` và `bus.consume(<group>, handler, topics=[...])`.
-- **P5:** API đặt dưới `/dashboard/`; gateway chỉ cho gọi qua `/api/dashboard/` (có JWT). Giao diện không dùng tiền tố `/dashboard`. API phải trả 401 nếu thiếu header `X-Auth-Subject`.
+- **Xác thực:** service phía sau không tự kiểm tra JWT mà dựa vào gateway (`auth_request` tới P2, chỉ gateway publish cổng ra host). Gateway ghi đè `X-Auth-Subject`/`X-Auth-Roles` nên service chỉ tin hai header này khi request đi qua gateway.
+- **P5:** API đặt dưới `/dashboard/`; gateway chỉ cho gọi qua `/api/dashboard/` (có JWT). Giao diện không dùng tiền tố `/dashboard`.
 
 ## Biến môi trường có sẵn
 
@@ -48,6 +49,10 @@ Profile `app` bật toàn bộ pipeline (C1–C3, detector + rule-api, P1–P5).
 | `GEOIP_DB_PATH` | `/data/geoip/dbip-city-lite.mmdb` | c3 (tải bằng `make geoip`) |
 | `PIPELINES_DIR` | `/config/pipelines` → `config/pipelines/` | p3 |
 | `JWT_SECRET` | — | p2 |
+| `AUTH_ALLOW_ANY` | `true` | p2: chế độ demo, cấp token cho mọi `client_id`/`client_secret` không rỗng. Khi chạy thật đặt `false` và khai báo `AUTH_CLIENTS` |
+| `AUTH_CLIENTS`, `AUTH_TOKEN_TTL` | xem [`p2-auth/README.md`](p2-auth/README.md) | p2 |
+| `STAGE_WINDOW_SECONDS` | `10` | p3: chu kỳ phát `stage.completed` |
+| `ALERT_THRESHOLDS`, `ALERT_COOLDOWN_SECONDS` | rỗng, `60` | p4 (xem [`p4-alerting/README.md`](p4-alerting/README.md)) |
 | `SMTP_HOST`, `SMTP_PORT`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`, `ALERT_WEBHOOK_URL` | `mailpit`, `1025`, …, `http://webhook-sink:8080/alerts` | p4 |
 
 ## Thêm một service vào hệ thống

@@ -46,11 +46,6 @@ async def _event_stream(request: Request, hub):
         hub.unsubscribe(queue)
 
 
-def _load_html(path: str) -> str:
-    with open(path, encoding="utf-8") as handle:
-        return handle.read()
-
-
 def create_app(store, hub, repo=None) -> FastAPI:
     app = FastAPI(title="P5 Dashboard Service", version="0.1.0")
     index_html = _load_index_html()

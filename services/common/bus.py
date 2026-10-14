@@ -142,6 +142,10 @@ class EventBus:
             "enable.auto.commit": False,
             "auto.offset.reset": "earliest",
             "partition.assignment.strategy": "cooperative-sticky",
+            # Process bị dừng đột ngột không kịp rời group: broker chỉ chờ 10s (mặc định 45s)
+            # trước khi chia lại partition, nên service khởi động lại nhận message sớm hơn.
+            "session.timeout.ms": 10000,
+            "heartbeat.interval.ms": 3000,
         })
         self._consumer.subscribe(list(topics))
         log.info("consuming", group=group, topics=list(topics))

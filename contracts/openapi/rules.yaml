@@ -1,0 +1,304 @@
+openapi: 3.1.0
+info:
+  title: Rule API (detector, D2)
+  version: 0.2.0
+  description: |
+    Quản lý rule phát hiện của detector (role `rule-management`, service `rule-api`).
+    Mỗi thay đổi được lưu vào `rules.json` (volume) rồi phát toàn bộ snapshot lên topic compacted
+    `rules.changed`; detector nạp lại ngay, không cần khởi động lại.
+
+    Pattern dùng cú pháp RE2 (thời gian khớp tuyến tính): không hỗ trợ lookaround và backreference.
+    Điểm (`score`) quy ra mức độ: critical ≥ 90, high ≥ 70, medium ≥ 40, còn lại low.
+
+    - Gọi từ ngoài qua gateway: `http://localhost:8080/api/rules/...` (cần JWT). Gateway bỏ tiền tố `/api`.
+    - Gọi nội bộ trong network: `http://rule-api:8090/rules/...`. Service không publish cổng ra máy host.
+  license:
+    name: Internal
+    identifier: LicenseRef-Internal
+servers:
+  - url: http://localhost:8080/api
+    description: Qua API gateway (JWT)
+  - url: http://rule-api:8090
+    description: Nội bộ network backend / waf-net
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+tags:
+  - name: rules
+    description: CRUD và kiểm tra rule
+paths:
+  /rules:
+    get:
+      tags: [rules]
+      operationId: listRules
+      summary: Lấy toàn bộ rule hiện hành
+      responses:
+        '200':
+          description: Snapshot rule hiện hành.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleDocument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [rules]
+      operationId: createRule
+      summary: Thêm rule mới
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleDefinition'
+            example:
+              id: XSS_IFRAME
+              group: xss
+              description: XSS chèn thẻ iframe
+              enabled: true
+              targets: [query]
+              pattern: '(?i)<\s*iframe'
+              score: 75
+              normalizers: [url_decode, html_decode]
+      responses:
+        '201':
+          description: Đã lưu và phát snapshot mới. Trả về toàn bộ snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleDocument'
+        '400':
+          $ref: '#/components/responses/InvalidRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/SnapshotNotPublished'
+  /rules/validate:
+    post:
+      tags: [rules]
+      operationId: validateRule
+      summary: Kiểm tra rule mà không lưu
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleDefinition'
+      responses:
+        '200':
+          description: Rule hợp lệ.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [valid]
+                properties:
+                  valid:
+                    type: boolean
+                    const: true
+        '400':
+          $ref: '#/components/responses/InvalidRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/RuleId'
+    get:
+      tags: [rules]
+      operationId: getRule
+      summary: Lấy một rule
+      responses:
+        '200':
+          description: Rule tìm thấy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleDefinition'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [rules]
+      operationId: updateRule
+      summary: Sửa rule (id trong body phải trùng id trên đường dẫn)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleDefinition'
+      responses:
+        '200':
+          description: Đã lưu và phát snapshot mới.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleDocument'
+        '400':
+          $ref: '#/components/responses/InvalidRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/SnapshotNotPublished'
+    delete:
+      tags: [rules]
+      operationId: deleteRule
+      summary: Xoá rule
+      description: Không xoá được rule cuối cùng (bộ rule phải có ít nhất một rule).
+      responses:
+        '200':
+          description: Đã xoá và phát snapshot mới.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleDocument'
+        '400':
+          $ref: '#/components/responses/InvalidRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/SnapshotNotPublished'
+  /health:
+    servers:
+      - url: http://rule-api:8090
+        description: Chỉ gọi nội bộ (healthcheck của container), gateway không định tuyến
+    get:
+      tags: [rules]
+      operationId: ruleApiHealth
+      summary: Kiểm tra service còn chạy
+      security: []
+      responses:
+        '200':
+          description: Service đang chạy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: UP
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: waf_token
+  schemas:
+    RuleId:
+      type: string
+      pattern: '^[A-Z0-9_]{3,80}$'
+      example: SQLI_UNION_SELECT
+    RuleDefinition:
+      type: object
+      additionalProperties: false
+      required: [id, group, targets, pattern, score]
+      properties:
+        id:
+          $ref: '#/components/schemas/RuleId'
+        group:
+          type: string
+          description: Loại tấn công, trùng `attack_type` trong event attack.detected.
+          examples: [sql_injection, xss, path_traversal, command_injection, lfi, rfi, sensitive_file, log4shell, ssti, scanner]
+        description:
+          type: string
+          description: Mô tả ngắn, hiển thị làm `rule_name` trong cảnh báo.
+        enabled:
+          type: boolean
+          default: false
+          description: Rule tắt vẫn được lưu nhưng không được biên dịch vào engine.
+        targets:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Trường của request để khớp. `headers` gồm mọi header có trong log (user-agent, referer).
+          items:
+            type: string
+            enum: [url, query, body, headers, user_agent, referer]
+        pattern:
+          type: string
+          maxLength: 2000
+          description: Biểu thức RE2, khớp không phân biệt hoa thường.
+        score:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Trọng số khi rule khớp (critical 95, high 85, medium 65 theo bộ mặc định).
+        normalizers:
+          type: array
+          uniqueItems: true
+          description: Chuẩn hoá giá trị trước khi khớp (giải mã URL/HTML tối đa hai lớp, bỏ comment SQL).
+          items:
+            type: string
+            enum: [url_decode, html_decode, sql_canonical]
+    RuleDocument:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, rules]
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleDefinition'
+    RuleApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    GatewayError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+  responses:
+    InvalidRule:
+      description: JSON sai, rule không hợp lệ (schema, regex không phải RE2), trùng id, hoặc xoá rule cuối cùng.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RuleApiError'
+          example:
+            error: 'Invalid RE2 regex: error parsing regexp: invalid or unsupported Perl syntax: `(?=`'
+    NotFound:
+      description: Không có rule với id này.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RuleApiError'
+          example:
+            error: 'Rule not found: NO_SUCH_RULE'
+    SnapshotNotPublished:
+      description: Rule đã lưu vào rules.json nhưng chưa phát được snapshot lên Kafka. rule-api phát lại snapshot đầy đủ khi khởi động.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RuleApiError'
+    Unauthorized:
+      description: Thiếu hoặc sai token (khi gọi qua gateway).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayError'
+          example:
+            error: unauthorized
+            message: missing or invalid bearer token

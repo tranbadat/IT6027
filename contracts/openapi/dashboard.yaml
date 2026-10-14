@@ -1,0 +1,259 @@
+openapi: 3.1.0
+info:
+  title: P5 Dashboard
+  version: 0.2.0
+  description: |
+    API tổng hợp cho bảng điều khiển thời gian thực. P5 đọc các topic `log.enriched`, `attack.detected`,
+    `anomaly.scored`, `alert.triggered`, `stage.completed` (consumer group `p5-dashboard`), giữ số liệu
+    tổng hợp trong bộ nhớ, lưu lịch sử tấn công vào Postgres (`detection.attacks`, idempotent theo
+    `event_id`) và đẩy sự kiện realtime qua Server-Sent Events.
+
+    - API dữ liệu: qua gateway `http://localhost:8080/api/dashboard/...` (cần JWT). Gateway chặn
+      đường tắt `/dashboard/...` không qua `/api`.
+    - Giao diện SPA (không thuộc API, không cần JWT; trang tự xin token): `http://localhost:8080/`;
+      `/rules` chuyển hướng 307 tới view quản lý rule `/#rules`.
+  license:
+    name: Internal
+    identifier: LicenseRef-Internal
+servers:
+  - url: http://localhost:8080/api
+    description: Qua API gateway (JWT)
+  - url: http://p5-dashboard:8000
+    description: Nội bộ network
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+tags:
+  - name: dashboard
+    description: Số liệu tổng hợp, lịch sử, luồng realtime
+paths:
+  /dashboard/summary:
+    get:
+      tags: [dashboard]
+      operationId: getSummary
+      summary: Số liệu tổng hợp trong bộ nhớ (từ khi service khởi động)
+      responses:
+        '200':
+          description: Lưu lượng theo domain và phút, top loại tấn công, top IP, cảnh báo, stage, sự kiện gần nhất.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Summary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /dashboard/attacks:
+    get:
+      tags: [dashboard]
+      operationId: listAttacks
+      summary: Lịch sử tấn công đã lưu trong Postgres (mới nhất trước)
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: domain
+          in: query
+          required: false
+          schema:
+            type: string
+          example: shop.local
+        - name: attack_type
+          in: query
+          required: false
+          schema:
+            type: string
+          example: sql_injection
+      responses:
+        '200':
+          description: Danh sách tấn công. Khi DB không dùng được, `attacks` rỗng và `persisted` = false.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttacksResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: Tham số sai (ví dụ limit ngoài khoảng 1–1000).
+  /dashboard/stream:
+    get:
+      tags: [dashboard]
+      operationId: streamEvents
+      summary: Luồng sự kiện realtime (Server-Sent Events)
+      description: |
+        Mỗi sự kiện SSE có tên (`event:`) bằng tên event của pipeline: `log.enriched`,
+        `attack.detected`, `anomaly.scored`, `alert.triggered`; `data:` là JSON dạng `StreamEvent`.
+        Khi không có sự kiện, server gửi dòng chú thích `: keep-alive` mỗi 15 giây.
+      responses:
+        '200':
+          description: Luồng text/event-stream, giữ kết nối mở.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                event: attack.detected
+                data: {"event":"attack.detected","domain":"shop.local","timestamp":"2026-10-14T03:53:33Z","data":{"attack_type":"sql_injection","rule_id":"SQLI_UNION_SELECT","severity":"critical","src_ip":"172.21.0.1","url":"/api/products?id=1%20UNION%20SELECT%20pw"}}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /healthz:
+    servers:
+      - url: http://p5-dashboard:8000
+        description: Chỉ gọi nội bộ (healthcheck của container)
+    get:
+      tags: [dashboard]
+      operationId: dashboardHealth
+      summary: Kiểm tra service còn chạy
+      security: []
+      responses:
+        '200':
+          description: Service đang chạy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: waf_token
+  schemas:
+    StreamEvent:
+      type: object
+      required: [event, domain, timestamp, data]
+      properties:
+        event:
+          type: string
+          enum: [log.enriched, attack.detected, anomaly.scored, alert.triggered]
+        domain:
+          type: string
+        timestamp:
+          type: string
+        data:
+          type: object
+          description: Phần `data` của envelope gốc (xem contracts/events/README.md).
+    AlertBrief:
+      type: object
+      properties:
+        domain: {type: string}
+        src_ip: {type: [string, 'null']}
+        url: {type: [string, 'null']}
+        attack_types:
+          type: array
+          items: {type: string}
+        severity: {type: [string, 'null']}
+        score: {type: [number, 'null']}
+        threshold: {type: [number, 'null']}
+        reason: {type: [string, 'null']}
+        triggered_at: {type: [string, 'null']}
+    Summary:
+      type: object
+      required: [traffic, top_attacks, top_ips, alerts, stages, recent]
+      properties:
+        traffic:
+          type: array
+          description: Số request theo domain và phút (`YYYY-MM-DDTHH:MM`).
+          items:
+            type: object
+            required: [domain, minute, count]
+            properties:
+              domain: {type: string}
+              minute: {type: string, example: '2026-10-14T03:53'}
+              count: {type: integer}
+        top_attacks:
+          type: array
+          items:
+            type: object
+            required: [attack_type, count]
+            properties:
+              attack_type: {type: string}
+              count: {type: integer}
+        top_ips:
+          type: array
+          items:
+            type: object
+            required: [ip, count]
+            properties:
+              ip: {type: string}
+              count: {type: integer}
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertBrief'
+        stages:
+          type: array
+          items:
+            type: object
+            properties:
+              pipeline: {type: [string, 'null']}
+              stage: {type: [string, 'null']}
+              processed: {type: [integer, 'null']}
+              window_seconds: {type: [integer, 'null']}
+              at: {type: [string, 'null']}
+        recent:
+          type: array
+          items:
+            $ref: '#/components/schemas/StreamEvent'
+    Attack:
+      type: object
+      required: [event_id, domain, attack_type]
+      properties:
+        event_id: {type: string}
+        detected_at: {type: [string, 'null']}
+        domain: {type: string}
+        attack_type: {type: string}
+        severity: {type: [string, 'null']}
+        rule_id: {type: [string, 'null']}
+        rule_name: {type: [string, 'null']}
+        src_ip: {type: [string, 'null']}
+        method: {type: [string, 'null']}
+        url: {type: [string, 'null']}
+        host: {type: [string, 'null']}
+        field: {type: [string, 'null']}
+        matched_value:
+          type: [string, 'null']
+          description: Đoạn giá trị khớp (tối đa 500 ký tự).
+        evidence: {type: [string, 'null']}
+        request_id: {type: [string, 'null']}
+        session_id: {type: [string, 'null']}
+    AttacksResponse:
+      type: object
+      required: [attacks, persisted]
+      properties:
+        attacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Attack'
+        count:
+          type: integer
+          description: Tổng số tấn công trong DB, không áp bộ lọc domain/attack_type (chỉ có khi persisted = true).
+        persisted:
+          type: boolean
+    GatewayError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+  responses:
+    Unauthorized:
+      description: Thiếu hoặc sai token (khi gọi qua gateway).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayError'

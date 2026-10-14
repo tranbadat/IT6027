@@ -113,6 +113,69 @@ def test_alerts_api_falls_back_to_memory_count_without_db():
     assert body["persisted"] is False, body
 
 
+# ---------- Ngưỡng cảnh báo riêng theo domain (ALERT_THRESHOLDS) ----------
+
+def _env(event, domain, score, threshold=70, src_ip="10.0.0.1", types=("sql_injection",)):
+    return {"event": event, "event_id": f"{event}-{domain}-{score}", "timestamp": "2026-10-14T03:00:00+00:00",
+            "domain": domain, "request_id": "r-1",
+            "data": {"score": score, "threshold": threshold, "severity": "high", "src_ip": src_ip,
+                     "attack_types": list(types), "url": "/x"}}
+
+
+def _handler(thresholds):
+    import consumer as consumer_mod
+    import notify as notify_mod
+    import store as store_mod
+    sent = []
+    notify_mod.send_email = lambda cfg, alert: sent.append(alert)   # không gửi SMTP thật
+    store = store_mod.AlertStore()
+    handler = consumer_mod.build_handler(store, CooldownStore(60), thresholds, None, "", None)
+    return handler, store, sent
+
+
+def test_alert_below_domain_threshold_is_not_sent():
+    handler, store, sent = _handler({"shop.local": 90.0})
+    handler(_env("alert.triggered", "shop.local", 75), "alert.triggered")
+    assert sent == [], sent
+    counters = store.snapshot_counters()
+    assert counters["alerts_below_threshold"] == 1 and counters["alerts"] == 0, counters
+
+
+def test_alert_at_or_above_domain_threshold_is_sent():
+    handler, store, sent = _handler({"shop.local": 90.0})
+    handler(_env("alert.triggered", "shop.local", 92), "alert.triggered")
+    assert len(sent) == 1, sent
+
+
+def test_anomaly_above_lower_domain_threshold_is_sent():
+    handler, store, sent = _handler({"blog.local": 50.0})
+    handler(_env("anomaly.scored", "blog.local", 60), "anomaly.scored")
+    assert len(sent) == 1, sent
+    assert "50" in (sent[0]["reason"] or ""), sent[0]
+    assert sent[0]["threshold"] == 50.0, sent[0]
+
+
+def test_anomaly_without_domain_threshold_is_only_counted():
+    handler, store, sent = _handler({})
+    handler(_env("anomaly.scored", "shop.local", 95), "anomaly.scored")
+    assert sent == [], sent
+    assert store.snapshot_counters()["anomalies"] == 1
+
+
+def test_anomaly_and_alert_of_same_request_send_one_email():
+    handler, store, sent = _handler({"blog.local": 50.0})
+    handler(_env("anomaly.scored", "blog.local", 80), "anomaly.scored")
+    handler(_env("alert.triggered", "blog.local", 80), "alert.triggered")
+    assert len(sent) == 1, sent
+    assert store.snapshot_counters()["alerts_suppressed"] == 1
+
+
+def test_without_thresholds_alert_is_sent_as_before():
+    handler, store, sent = _handler({})
+    handler(_env("alert.triggered", "shop.local", 75), "alert.triggered")
+    assert len(sent) == 1, sent
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

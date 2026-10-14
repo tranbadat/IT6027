@@ -51,10 +51,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
-        '400':
-          $ref: '#/components/responses/Error'
         '401':
-          $ref: '#/components/responses/Error'
+          description: Thiếu client_id/client_secret hoặc sai thông tin client (khi tắt AUTH_ALLOW_ANY).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '429':
           $ref: '#/components/responses/Error'
   /auth/verify:
@@ -131,7 +133,8 @@ components:
           type: array
           items:
             type: string
-            enum: [admin, analyst, service]
+            enum: [admin]
+            description: Phiên bản hiện tại chỉ cấp vai trò admin.
     Error:
       type: object
       required: [error, message]

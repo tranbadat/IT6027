@@ -170,4 +170,5 @@ Kèm theo:
 - [`ke_hoach_waf_log_analyzer.md`](ke_hoach_waf_log_analyzer.md) — kế hoạch triển khai đầy đủ: phân công, chi tiết từng module, lịch trình 4 tuần.
 - [`docs/infrastructure.md`](docs/infrastructure.md) — hạ tầng Docker Compose: thành phần, profile, log format, gateway, chuyển mock sang service thật, xử lý sự cố.
 - [`services/README.md`](services/README.md) — quy ước và biến môi trường cho từng service.
-- [`contracts/`](contracts/) — OpenAPI (Scope, Auth), event envelope schema, bảng event → queue.
+- [`contracts/`](contracts/) — OpenAPI cho mọi API HTTP (`scope`, `auth`, `rules`, `pipelines`, `alerting`, `dashboard`; xem trên Swagger UI http://localhost:8090), event envelope schema và quy ước topic Kafka.
+- README từng service: [`c1-ingestion`](services/c1-ingestion/README.md), [`c2-parser`](services/c2-parser/README.md), [`c3-enrichment`](services/c3-enrichment/README.md), [`detector`](services/detector/README.md), [`p1-scope`](services/p1-scope/README.md), [`p2-auth`](services/p2-auth/README.md), [`p3-orchestrator`](services/p3-orchestrator/README.md), [`p4-alerting`](services/p4-alerting/README.md), [`p5-dashboard`](services/p5-dashboard/README.md), [`metrics-exporter`](services/metrics-exporter/README.md).

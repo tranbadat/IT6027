@@ -3,3 +3,6 @@ extends:
 rules:
   # Server trỏ localhost là chủ đích: contract phục vụ môi trường chạy cục bộ.
   no-server-example.com: off
+  # /healthz, /health là endpoint nội bộ cho healthcheck của container, không có phản hồi 4xx.
+  # Các endpoint nghiệp vụ đều khai báo đủ 400/401/404 trong từng file.
+  operation-4xx-response: off

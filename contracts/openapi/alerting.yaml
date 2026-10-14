@@ -1,0 +1,184 @@
+openapi: 3.1.0
+info:
+  title: P4 Alerting
+  version: 0.2.0
+  description: |
+    Lịch sử cảnh báo và bộ đếm của P4. P4 đọc `alert.triggered` và `anomaly.scored`
+    (consumer group `p4-alerting`), gửi email/webhook, lưu cảnh báo vào Postgres
+    (`alerting.alerts`, idempotent theo `event_id`).
+
+    - Gọi từ ngoài qua gateway: `http://localhost:8080/api/alerts/` (cần JWT). Gateway bỏ tiền tố `/api`.
+    - Gọi nội bộ: `http://p4-alerting:8000/alerts`.
+  license:
+    name: Internal
+    identifier: LicenseRef-Internal
+servers:
+  - url: http://localhost:8080/api
+    description: Qua API gateway (JWT)
+  - url: http://p4-alerting:8000
+    description: Nội bộ network
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+tags:
+  - name: alerts
+    description: Lịch sử cảnh báo
+paths:
+  /alerts:
+    get:
+      tags: [alerts]
+      operationId: listAlerts
+      summary: Cảnh báo gần nhất (mới nhất trước) và bộ đếm
+      description: |
+        Khi có Postgres, `alerts` đọc từ DB và `count` là tổng số cảnh báo đã lưu (không bị đặt lại
+        khi service khởi động lại). Khi DB không dùng được, đọc từ bộ nhớ (tối đa 500 bản ghi gần nhất).
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: domain
+          in: query
+          required: false
+          description: Chỉ lấy cảnh báo của domain này.
+          schema:
+            type: string
+          example: shop.local
+      responses:
+        '200':
+          description: Danh sách cảnh báo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: Tham số sai (ví dụ limit ngoài khoảng 1–500).
+  /healthz:
+    servers:
+      - url: http://p4-alerting:8000
+        description: Chỉ gọi nội bộ (healthcheck của container)
+    get:
+      tags: [alerts]
+      operationId: alertingHealth
+      summary: Kiểm tra service còn chạy
+      security: []
+      responses:
+        '200':
+          description: Service đang chạy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: waf_token
+  schemas:
+    Alert:
+      type: object
+      required: [event_id, domain, severity, attack_types, main_attack_type, src_ip]
+      properties:
+        event_id:
+          type: string
+          description: event_id của envelope alert.triggered.
+        triggered_at:
+          type: [string, 'null']
+          description: Thời điểm phát cảnh báo (RFC 3339).
+        domain:
+          type: string
+        severity:
+          type: string
+          examples: [critical, high, medium, low]
+        attack_types:
+          type: array
+          items:
+            type: string
+        main_attack_type:
+          type: string
+          description: Phần tử đầu của attack_types (dùng làm khoá chống gửi trùng).
+        src_ip:
+          type: string
+          description: IP nguồn; `distributed` với cảnh báo DDoS.
+        host:
+          type: [string, 'null']
+        url:
+          type: [string, 'null']
+        score:
+          type: [number, 'null']
+        threshold:
+          type: [number, 'null']
+        rule_ids:
+          type: array
+          items:
+            type: string
+        reason:
+          type: [string, 'null']
+        request_id:
+          type: [string, 'null']
+        session_id:
+          type: [string, 'null']
+    Counters:
+      type: object
+      description: Bộ đếm trong bộ nhớ từ khi service khởi động.
+      properties:
+        anomalies: {type: integer}
+        anomalies_flagged: {type: integer}
+        alerts: {type: integer}
+        alerts_suppressed: {type: integer}
+        alerts_below_threshold: {type: integer}
+        emails_sent: {type: integer}
+        emails_failed: {type: integer}
+        webhooks_sent: {type: integer}
+        webhooks_failed: {type: integer}
+        db_errors: {type: integer}
+      additionalProperties:
+        type: integer
+    AlertsResponse:
+      type: object
+      required: [alerts, count, counters, persisted]
+      properties:
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alert'
+        count:
+          type: integer
+          minimum: 0
+          description: Tổng số cảnh báo của toàn bảng (trong DB nếu persisted = true, ngược lại trong bộ nhớ), không áp bộ lọc domain.
+        counters:
+          $ref: '#/components/schemas/Counters'
+        persisted:
+          type: boolean
+          description: true nếu dữ liệu đọc từ Postgres.
+    GatewayError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+  responses:
+    Unauthorized:
+      description: Thiếu hoặc sai token (khi gọi qua gateway).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayError'
