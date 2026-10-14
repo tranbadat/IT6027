@@ -91,16 +91,16 @@ curl -s localhost:8080/api/pipelines/ -H "Authorization: Bearer $TOKEN" | jq '.r
 make bus-peek t=stage.completed
 ```
 
-Unit test: P3 hiện chưa có file test, test sẽ được bổ sung riêng. `make test-python` chạy toàn bộ test Python; khi đã có file test, chạy riêng bằng:
+Unit test [`test_orchestrator.py`](test_orchestrator.py) có 6 test: nạp cấu hình YAML (chuẩn hoá, bỏ file lỗi, thư mục không tồn tại), ánh xạ event sang stage, event giao lại chỉ đếm một lần, phần thay đổi giữa hai lần publish, nội dung `stage.completed`. `make test-python` chạy toàn bộ test Python; chạy riêng bằng:
 
 ```bash
 docker run --rm -v "$PWD/services:/app:ro" -w /app/p3-orchestrator \
-  -e PYTHONPATH=/app:/app/p3-orchestrator waf/base:dev python -B test_<tên>.py
+  -e PYTHONPATH=/app:/app/p3-orchestrator waf/base:dev python -B test_orchestrator.py
 ```
 
 ## Giới hạn
 
 - Trạng thái chỉ nằm trong bộ nhớ: khởi động lại thì bộ đếm và `last_event_at` về rỗng, còn offset đã commit nên event cũ không được đếm lại. Group mới (hoặc đổi `EVENT_GROUP`) đọc từ đầu topic và cộng cả event cũ còn trong retention.
-- Không loại bản trùng theo `event_id`: message được giao lại (at-least-once) bị đếm hai lần.
+- Loại bản trùng theo `event_id` trong bộ nhớ với 10.000 id gần nhất: message giao lại sau khi P3 khởi động lại vẫn có thể bị đếm thêm.
 - Mốc đã phát được cập nhật trước khi publish; publish lỗi chỉ ghi log, số event của cửa sổ đó không được phát lại. Nếu thread publisher không kết nối được Kafka, thread dừng nhưng `/healthz` vẫn trả 200.
 - P3 không gọi `/scope/check` và không tự kiểm tra xác thực; `GET /pipelines` chỉ được bảo vệ khi đi qua gateway.

@@ -38,7 +38,8 @@ Consumer chuẩn hoá: đọc dòng log thô từ `log.raw.ingested`, tách thà
 ## Xử lý đặc biệt
 
 - **Định dạng chấp nhận:** một regex trong [`parser.py`](parser.py) khớp phần **combined** chuẩn (`remote ident user [time] "request" status bytes "referer" "user_agent"`), theo sau là ba trường mở rộng của `waf_combined`, đều tuỳ chọn và theo đúng thứ tự: `"host"`, `rt=<giây>` hoặc `rt_us=<micro giây>`, `sid="..."`. Vì vậy log `waf_combined` của Nginx/Apache (xem [`docs/infrastructure.md`](../../docs/infrastructure.md)) và log combined chuẩn của web server bất kỳ đều parse được. Referer và User-Agent chấp nhận chuỗi có escape dạng `\"`.
-- **Dòng sai định dạng:** `parse_line` ném `ValueError("line does not match waf_combined format")`. `bus.consume` ([`common/bus.py`](../common/bus.py)) bắt lỗi, ghi log error `handler failed, dead-lettering`, gửi nguyên value sang `waf.deadletter` (header `error`, `source_topic`, `consumer_group`, `dead_lettered_at`) rồi commit; dòng đó không có `log.normalized`. Event sai envelope hoặc thiếu `data.raw` cũng vào dead-letter như vậy.
+- **Nhiều dòng trong một event:** `data.raw` có thể chứa nhiều dòng (gửi theo lô, CRLF). `parse_raw` tách theo dòng, bỏ dòng trống và parse hết trước khi publish; mỗi dòng hợp lệ thành một `log.normalized` (cùng `request_id` của event gốc).
+- **Dòng sai định dạng:** dòng hỏng nằm lẫn với dòng hợp lệ chỉ bị bỏ qua và ghi log warning `skipped malformed log lines` (không dead-letter, để khi xử lý lại không publish trùng các dòng hợp lệ). Khi không dòng nào hợp lệ, `parse_raw` ném `ValueError`; `bus.consume` ([`common/bus.py`](../common/bus.py)) gửi nguyên value sang `waf.deadletter` (header `error`, `source_topic`, `consumer_group`, `dead_lettered_at`) rồi commit. Event sai envelope hoặc thiếu `data.raw` cũng vào dead-letter như vậy.
 - **Request rác trong dòng hợp lệ:** nếu chuỗi request không có dạng `METHOD target HTTP/x` (ví dụ client gửi byte TLS vào cổng HTTP), dòng vẫn được phát với `method`, `protocol` rỗng và toàn bộ chuỗi request nằm trong `path`, để bước phát hiện vẫn phân tích được.
 - **Giải mã URL:** `path_decoded`, `query_decoded` giải mã percent-encoding đúng một lớp (`%2527` thành `%27`) và không đổi `+` thành dấu cách. Bản gốc giữ trong `path`, `query_string`.
 - **Giao nhận:** publish chờ broker xác nhận; nếu không được xác nhận, process dừng để Docker khởi động lại và đọc lại message chưa commit (at-least-once).
@@ -56,7 +57,7 @@ make bus-peek t=log.normalized
 make bus-peek t=waf.deadletter           # dòng không parse được
 ```
 
-Unit test [`test_parser.py`](test_parser.py) có 5 test cho `parser.py` (dòng Nginx `rt=`, Apache `rt_us=`, trường `-`, log combined chuẩn, dòng sai định dạng), không cần Kafka; `main.py` không có unit test.
+Unit test [`test_parser.py`](test_parser.py) có 9 test cho `parser.py` (dòng Nginx `rt=`, Apache `rt_us=`, trường `-`, log combined chuẩn, dòng sai định dạng, khối nhiều dòng, CRLF và dòng trống, dòng hỏng lẫn dòng hợp lệ, khối không có dòng hợp lệ), không cần Kafka; `main.py` không có unit test.
 
 ```bash
 make test-python   # chạy test của mọi service Python

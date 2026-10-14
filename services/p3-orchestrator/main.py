@@ -61,7 +61,9 @@ def build_handler(state):
         if stage is None:
             log.debug("event without stage mapping, ignored", event=env["event"])
             return
-        state.record(env["domain"], stage, env.get("timestamp"))
+        if not state.record(env["domain"], stage, env.get("timestamp"), env.get("event_id")):
+            log.debug("duplicate event ignored", event_id=env.get("event_id"))
+            return
         log.debug("stage progressed", domain=env["domain"], stage=stage)
 
     return handle

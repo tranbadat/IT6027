@@ -125,7 +125,7 @@ paths:
                   target_type: {type: string, enum: [domain, app]}
                   enabled: {type: boolean}
         '400':
-          description: target không hợp lệ.
+          description: target không hợp lệ hoặc target_type không thuộc domain/app.
           content:
             application/json:
               schema:

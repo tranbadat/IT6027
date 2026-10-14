@@ -1,7 +1,11 @@
 """P3 — Trạng thái pipeline dùng chung giữa các thread (thread consumer, thread
 publisher, thread HTTP). Mọi truy cập bọc trong Lock; snapshot/drain trả bản sao mới.
 """
+import collections
 import threading
+
+# Số event_id gần nhất được nhớ để loại bản trùng khi Kafka giao lại message (at-least-once).
+SEEN_EVENT_CAP = 10000
 
 
 class PipelineState:
@@ -12,14 +16,25 @@ class PipelineState:
         self._counts = {}          # (domain, stage) -> tổng số đã nhận
         self._last_event_at = {}   # (domain, stage) -> ISO timestamp
         self._published = {}        # (domain, stage) -> tổng tại lần publish trước
+        self._seen = collections.OrderedDict()  # event_id đã đếm (LRU, tối đa SEEN_EVENT_CAP)
 
-    def record(self, domain, stage, when):
-        """Ghi nhận 1 event: tăng bộ đếm và cập nhật thời điểm cuối."""
+    def record(self, domain, stage, when, event_id=None):
+        """Ghi nhận 1 event: tăng bộ đếm và cập nhật thời điểm cuối.
+
+        Trả False (không đếm) nếu event_id đã được đếm trước đó (message bị giao lại).
+        """
         key = (domain, stage)
         with self._lock:
+            if event_id is not None:
+                if event_id in self._seen:
+                    return False
+                self._seen[event_id] = None
+                if len(self._seen) > SEEN_EVENT_CAP:
+                    self._seen.popitem(last=False)
             self._counts[key] = self._counts.get(key, 0) + 1
             if when:
                 self._last_event_at[key] = when
+            return True
 
     def drain_changes(self):
         """Trả [(domain, stage, processed)] có thay đổi kể từ lần publish trước

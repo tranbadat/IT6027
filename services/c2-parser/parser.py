@@ -96,3 +96,24 @@ def parse_line(raw: str, log_source: str) -> dict:
         "path_decoded": unquote(path),
         "query_decoded": unquote(query_string),
     }
+
+
+def parse_raw(raw: str, log_source: str) -> tuple[list[dict], int]:
+    """Parse một khối log có thể gồm nhiều dòng (gửi theo lô, syslog, CRLF).
+
+    Trả (danh sách trường đã chuẩn hoá theo thứ tự dòng, số dòng sai định dạng). Dòng trống bị
+    bỏ qua. Ném ValueError chỉ khi không có dòng nào hợp lệ, để caller parse xong toàn bộ trước
+    khi publish và không phải ném lỗi sau khi đã publish một phần.
+    """
+    parsed: list[dict] = []
+    invalid = 0
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            parsed.append(parse_line(line, log_source))
+        except ValueError:
+            invalid += 1
+    if not parsed:
+        raise ValueError("no valid log line in raw event")
+    return parsed, invalid

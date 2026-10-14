@@ -15,6 +15,7 @@ from common import logging as log
 
 SOURCE = "p1-scope"
 CACHE_TTL_SECONDS = 60
+TARGET_TYPES = ("domain", "app")
 NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$")
 
 app = FastAPI(title="P1 Scope Service", version="0.1.0")
@@ -100,6 +101,8 @@ def add_allowlist(body: dict) -> dict:
     if not NAME_RE.match(target):
         raise HTTPException(status_code=400, detail="invalid target")
     target_type = body.get("target_type") or ("app" if "." not in target else "domain")
+    if target_type not in TARGET_TYPES:
+        raise HTTPException(status_code=400, detail="invalid target_type")
     enabled = bool(body.get("enabled", True))
     _conn.execute(
         "INSERT INTO scope.allowlist (target, target_type, enabled, note) VALUES (%s,%s,%s,%s)"

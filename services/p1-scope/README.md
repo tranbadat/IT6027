@@ -81,11 +81,11 @@ curl -s -X POST localhost:8080/api/scope/allowlist -H "Authorization: Bearer $TO
   -H 'content-type: application/json' -d '{"target":"myapp.com","note":"app moi"}'
 ```
 
-Unit test: P1 hiện chưa có file test, test sẽ được bổ sung riêng. `make test-python` chạy toàn bộ test Python; khi đã có file test, chạy riêng bằng:
+Unit test [`test_scope.py`](test_scope.py) có 8 test, gọi API qua FastAPI `TestClient` với kết nối DB giả (không cần Postgres): domain được phép, bị từ chối hoặc đã tắt, domain ưu tiên hơn app, kiểm tra theo app, tham số thiếu/sai, thêm allowlist (chữ thường, suy `target_type`), từ chối `target` hoặc `target_type` sai, xoá idempotent. `make test-python` chạy toàn bộ test Python; chạy riêng bằng:
 
 ```bash
 docker run --rm -v "$PWD/services:/app:ro" -w /app/p1-scope \
-  -e PYTHONPATH=/app:/app/p1-scope waf/base:dev python -B test_<tên>.py
+  -e PYTHONPATH=/app:/app/p1-scope waf/base:dev python -B test_scope.py
 ```
 
 `make smoke` có kiểm tra `/api/scope/check` qua gateway: thiếu token trả 401, `shop.local` được phép, `internal.local` bị từ chối, thiếu tham số trả 400.

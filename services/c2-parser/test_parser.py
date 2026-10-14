@@ -61,6 +61,31 @@ def test_malformed_raises():
     raise AssertionError("expected ValueError")
 
 
+def test_multi_line_raw_is_parsed_line_by_line():
+    fields, invalid = parser_mod.parse_raw(NGINX + "\n" + APACHE + "\n", "nginx")
+    assert [f["status"] for f in fields] == [200, 404], fields
+    assert invalid == 0, invalid
+
+
+def test_crlf_and_blank_lines_are_ignored():
+    fields, invalid = parser_mod.parse_raw(NGINX + "\r\n\r\n", "nginx")
+    assert len(fields) == 1 and invalid == 0, (fields, invalid)
+    assert fields[0]["path"] == "/api/products", fields[0]
+
+
+def test_malformed_line_among_valid_lines_is_counted_not_fatal():
+    fields, invalid = parser_mod.parse_raw(NGINX + "\nnot a log line\n" + APACHE, "nginx")
+    assert len(fields) == 2 and invalid == 1, (fields, invalid)
+
+
+def test_raw_without_any_valid_line_raises():
+    try:
+        parser_mod.parse_raw("garbage\nmore garbage", "nginx")
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError when no line is valid")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
