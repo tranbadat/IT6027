@@ -1,7 +1,9 @@
 """C1 — Log Ingestion (worker, KHÔNG có HTTP).
 
-Tail liên tục các file access log; mỗi dòng mới publish log.raw.ingested.
+Tail liên tục các file access log; mỗi dòng mới publish log.raw.ingested. Các dòng của một
+vòng poll được gửi liền nhau và chờ broker xác nhận một lần cho cả vòng.
 """
+import ipaddress
 import time
 import uuid
 
@@ -36,6 +38,21 @@ class _SkipTracker:
             self._last_log = now
 
 
+def partition_key(domain: str, line: str) -> str | None:
+    """Key "domain|IP client" lấy từ trường đầu dòng (Nginx $remote_addr, Apache %h).
+
+    Log của một domain nhờ vậy chia đều các partition, nhiều instance C2 xử lý song song được,
+    trong khi mọi dòng của cùng một client vẫn vào một partition (giữ thứ tự). Trường đầu không
+    phải IP (log JSON, %h là hostname) -> None: bus dùng key = domain như trước.
+    """
+    fields = line.split(maxsplit=1)
+    try:
+        client = str(ipaddress.ip_address(fields[0])) if fields else None
+    except ValueError:
+        client = None
+    return bus_mod.client_key(domain, client) if client else None
+
+
 def _publish_record(record: tailer_mod.LineRecord, bus: bus_mod.EventBus,
                     scope: scope_mod.ScopeClient, skips: _SkipTracker) -> None:
     if not scope.allowed(record.domain):
@@ -49,9 +66,23 @@ def _publish_record(record: tailer_mod.LineRecord, bus: bus_mod.EventBus,
     }
     try:
         bus.publish("log.raw.ingested", domain=record.domain, data=data,
-                    request_id=str(uuid.uuid4()))
+                    request_id=str(uuid.uuid4()), key=partition_key(record.domain, record.line))
     except Exception as exc:  # broker trục trặc: log tường minh, không dừng worker
         log.error("publish failed", domain=record.domain, error=str(exc))
+
+
+def publish_cycle(records: list[tailer_mod.LineRecord], bus: bus_mod.EventBus,
+                  scope: scope_mod.ScopeClient, skips: _SkipTracker) -> None:
+    """Gửi mọi dòng mới của một vòng poll, chờ broker xác nhận một lần thay vì sau từng dòng.
+    Broker không xác nhận: ghi log lỗi kèm số dòng của vòng, worker chạy tiếp như trước."""
+    if not records:
+        return
+    try:
+        with bus.deferred_delivery("log.raw.ingested"):
+            for record in records:
+                _publish_record(record, bus, scope, skips)
+    except bus_mod.DeliveryError as exc:
+        log.error("publish failed", lines=len(records), error=str(exc))
 
 
 def run_loop(tailer: tailer_mod.LogTailer, bus: bus_mod.EventBus,
@@ -59,8 +90,7 @@ def run_loop(tailer: tailer_mod.LogTailer, bus: bus_mod.EventBus,
     skips = _SkipTracker()
     while True:
         try:
-            for record in tailer.poll():
-                _publish_record(record, bus, scope, skips)
+            publish_cycle(tailer.poll(), bus, scope, skips)
         except Exception as exc:  # lỗi bất ngờ trong một vòng: log rồi tiếp tục
             log.error("poll cycle failed", error=str(exc))
         # Vừa chờ giữa hai vòng poll, vừa phục vụ heartbeat để broker không đóng kết nối.

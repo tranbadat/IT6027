@@ -22,7 +22,7 @@ So với kế hoạch (`event`, `request_id`/`session_id`, `timestamp`, `data`),
 ## Topology
 
 - **Topic = tên event** (`log.raw.ingested`, `log.normalized`, …). Topic sự kiện có 3 partition, giữ message 3 ngày.
-- **Key message = `domain|src_ip`** (domain viết thường) nếu `data` có `src_ip`, ngược lại là `domain`. Mọi event của cùng một client vào cùng partition: giữ thứ tự và để detector giữ trạng thái cửa sổ theo client trên một instance. Detector kiểm tra key này và chuyển message sai key sang dead-letter.
+- **Key message = `domain|src_ip`** (domain viết thường) nếu `data` có `src_ip`, ngược lại là `domain`. Mọi event của cùng một client vào cùng partition: giữ thứ tự và để detector giữ trạng thái cửa sổ theo client trên một instance. Detector kiểm tra key này và chuyển message sai key sang dead-letter. Riêng `log.raw.ingested` chưa có `src_ip` trong `data`: C1 lấy IP ở đầu dòng log làm key (`domain|IP`), nên log của một domain chia đều các partition; dòng không bắt đầu bằng IP dùng key `domain`.
 - **Mỗi service đọc bằng một consumer group riêng** (tên group = tên service), tự khai báo danh sách topic cần đọc trong mã nguồn. Group mới đọc từ đầu topic (`auto.offset.reset=earliest`).
 - **Dead-letter:** topic `waf.deadletter` (1 partition, giữ 7 ngày).
 - **Snapshot rule:** topic `rules.changed` (compacted, key `active`) do `rule-api` phát, `detector` đọc để nạp lại rule mà không cần khởi động lại.
@@ -52,6 +52,7 @@ So với kế hoạch (`event`, `request_id`/`session_id`, `timestamp`, `data`),
 **Consume**
 
 - Tắt auto-commit. Chỉ commit offset sau khi handler xong **và** mọi event handler phát ra đã được broker xác nhận (at-least-once).
+- Consume theo batch (các message đã có sẵn, tối đa 500 message hoặc 1 giây xử lý): xử lý lần lượt, flush và commit một lần cho cả batch. Lỗi giao nhận ở bất kỳ message nào thì không commit cả batch; khi khởi động lại, các message đã xử lý trong batch đó được xử lý lại, nên consumer phải chịu được message trùng.
 - Message sai schema hoặc handler ném lỗi: gửi nguyên value sang `waf.deadletter` với header `error`, `source_topic`, `consumer_group` rồi commit. Không xử lý lại vô hạn.
 - Lỗi giao nhận (broker không xác nhận): để process dừng, khởi động lại sẽ đọc lại message chưa commit.
 - Event thuộc domain ngoài scope: commit rồi bỏ qua, ghi log ở mức info. Đây là hành vi đúng, không phải lỗi.

@@ -36,7 +36,7 @@ Consumer làm giàu log: đọc `log.normalized`, thêm vị trí địa lý (Ge
 - **Đếm tần suất:** `RequestRateCounter` giữ một deque mốc thời gian cho mỗi `(domain, src_ip)` và loại mốc cũ hơn 60 giây trước khi đếm. Mốc là thời điểm C3 xử lý event (`time.time()`), không phải `request_ts` trong log.
 - **Giới hạn bộ nhớ:** vượt 10000 cặp `(domain, src_ip)` thì loại cặp lâu không dùng nhất (LRU); mỗi cặp giữ tối đa 1000 mốc, nên `req_count_1m` bão hoà ở 1000.
 - **Không sửa input:** `build_enriched_data` tạo dict mới thay vì sửa `data` của envelope vào.
-- **Lỗi và giao nhận:** giống C2 ([`common/bus.py`](../common/bus.py)); handler ném lỗi thì value vào `waf.deadletter` rồi commit, broker không xác nhận thì process dừng để đọc lại message chưa commit.
+- **Lỗi và giao nhận:** giống C2 ([`common/bus.py`](../common/bus.py)); handler ném lỗi thì value vào `waf.deadletter` rồi commit, broker không xác nhận thì process dừng và batch chưa commit được xử lý lại.
 
 ## Chạy và kiểm thử
 

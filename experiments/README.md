@@ -97,7 +97,11 @@ Kết quả rule tương tự lượt 2 (recall 0,935, CRS 0,754, cùng FPR 0,00
 
 ## Kiểm thử tải
 
-[`loadtest.py`](loadtest.py) ghi dồn 20.000 dòng log hợp lệ (domain `lab.local`, 20.000 IP khác nhau, 10% mang payload) vào log của Nginx trong 0,2 giây, mô phỏng một đợt tăng đột biến. [`loadmon.py`](loadmon.py) đo offset Kafka mỗi 0,25 giây. Môi trường: triển khai 3 tầng (`deploy/`) trên một máy Apple M4, Docker Desktop cấp 10 CPU và 8 GB RAM; mỗi service một instance, mỗi topic 3 partition. Kết quả: [`results/loadtest.md`](results/loadtest.md).
+[`loadtest.py`](loadtest.py) ghi dồn 20.000 dòng log hợp lệ (domain `lab.local`, 20.000 IP khác nhau, 10% mang payload) vào log của Nginx trong chưa tới 0,2 giây, mô phỏng một đợt tăng đột biến. [`loadmon.py`](loadmon.py) đo offset Kafka mỗi 0,25 giây. Môi trường: triển khai 3 tầng (`deploy/`) trên một máy Apple M4, Docker Desktop cấp 10 CPU và 8 GB RAM; mỗi service một instance, mỗi topic 3 partition.
+
+### Lần đo đầu: điểm nghẽn tại C2
+
+Kết quả: [`results/loadtest.md`](results/loadtest.md).
 
 | Khâu | Xử lý hết 20.000 message sau (s) | Thông lượng (message/s) | Lag lớn nhất |
 |---|---|---|---|
@@ -106,12 +110,44 @@ Kết quả rule tương tự lượt 2 (recall 0,935, CRS 0,754, cùng FPR 0,00
 | C3 làm giàu | 138,2 | 145 | 7 |
 | detector | 138,2 | 145 | 6 |
 
-Toàn bộ 20.000 dòng được phân tích sau 138 giây, sinh 3.389 `attack.detected` và 1.938 `alert.triggered`; không message nào vào dead-letter.
+- C2 flush producer và commit offset đồng bộ sau từng message trước khi đọc message tiếp theo, nên thông lượng bị giới hạn bởi độ trễ khứ hồi tới broker.
+- `log.raw.ingested` dùng key `domain` (dòng thô chưa có IP), nên mọi dòng của một domain vào cùng một partition: thêm instance C2 cũng không giúp khi đột biến chỉ ở một domain.
+- Các consumer phụ (P3 thống kê pipeline, metrics-exporter) đọc cả ba topic log (60.000 message) với cùng cơ chế, tụt lại khoảng 43.000 message khi detector đã xong và cần thêm khoảng 5 phút để đuổi kịp.
 
-- **Điểm nghẽn là C2.** Mỗi message được flush producer và commit offset đồng bộ trước khi đọc message tiếp theo (bảo đảm at-least-once), nên thông lượng một consumer bị giới hạn bởi độ trễ khứ hồi tới broker. Ngoài ra `log.raw.ingested` dùng khoá `domain|` (dòng thô chưa có IP), nên mọi dòng của một domain vào cùng một partition: thêm instance C2 cũng không giúp khi đột biến chỉ ở một domain.
-- C3 và detector theo kịp tốc độ C2 (lag không quá 7), nên giới hạn thông lượng riêng của hai khâu này chưa đo được trong thử nghiệm này.
-- Các consumer phụ (P3 thống kê pipeline, metrics-exporter) đọc cả ba topic log (60.000 message) với cùng tốc độ khoảng 140 message/s, nên tụt lại khoảng 43.000 message khi detector đã xong và cần thêm khoảng 5 phút để đuổi kịp. Không ảnh hưởng tới phát hiện và cảnh báo, nhưng số liệu trên dashboard và Grafana bị trễ trong thời gian đó.
-- Hướng cải thiện: commit theo lô (xử lý N message, flush và commit một lần, vẫn at-least-once), và C1 tách IP ở đầu dòng để đưa vào khoá, giúp chia đều partition và cho phép chạy nhiều instance C2.
+### Bước 1: consume theo batch và key theo client ở C2
+
+Hai thay đổi trong [`common/bus.py`](../services/common/bus.py) và [C1](../services/c1-ingestion/main.py):
+
+1. **Consume theo batch:** xử lý lần lượt các message đã có sẵn (tối đa 500 message hoặc 1 giây xử lý), flush producer và commit một lần cho cả batch. Poll vẫn được gọi giữa mọi message, nên handler chậm (P4 gửi email) không làm consumer bị loại khỏi group. Vẫn at-least-once: một message đầu ra không được xác nhận thì cả batch không được commit và được xử lý lại. Khi lưu lượng thấp, batch chỉ có một message nên độ trễ không đổi.
+2. **Key theo client cho log thô:** C1 lấy IP ở đầu dòng làm key `domain|IP`, nên log của một domain chia đều 3 partition và có thể chạy tới 3 instance C2.
+
+Kết quả: [`results/loadtest-batch/loadtest.md`](results/loadtest-batch/loadtest.md).
+
+| Khâu | Xử lý hết 20.000 message sau (s) | Thông lượng (message/s) | Lag lớn nhất |
+|---|---|---|---|
+| C1 thu thập | 8,8 | 2.275 | - |
+| C2 chuẩn hoá | 8,8 | 2.275 | 12 |
+| C3 làm giàu | 8,8 | 2.275 | 34 |
+| detector | 8,8 | 2.275 | 146 |
+
+Thời gian xử lý hết đợt tải giảm từ 138 giây xuống 8,8 giây. Mọi khâu sau C1 theo kịp, nên điểm nghẽn chuyển sang C1: mỗi dòng vẫn được gửi và chờ broker xác nhận riêng.
+
+### Bước 2: C1 gửi theo vòng poll
+
+C1 gửi mọi dòng mới của một vòng poll liền nhau rồi chờ broker xác nhận một lần (`EventBus.deferred_delivery`, cùng cơ chế với consume theo batch). Broker không xác nhận thì C1 ghi log lỗi kèm số dòng của vòng và chạy tiếp, như hành vi cũ với từng dòng.
+
+| Khâu | 20.000 dòng: xử lý hết sau (s) | 100.000 dòng: xử lý hết sau (s) | 100.000 dòng: thông lượng (message/s) | 100.000 dòng: lag lớn nhất |
+|---|---|---|---|---|
+| C1 thu thập | 1,2 | 3,1 | 32.468 | - |
+| C2 chuẩn hoá | 2,1 | 6,3 | 15.974 | 70.500 |
+| C3 làm giàu | 2,1 | 6,3 | 15.974 | 500 |
+| detector | 4,5 | 17,3 | 5.774 | 68.799 |
+
+Kết quả: [`results/loadtest-c1batch/loadtest.md`](results/loadtest-c1batch/loadtest.md) (20.000 dòng) và [`results/loadtest-c1batch-100k/loadtest.md`](results/loadtest-c1batch-100k/loadtest.md) (100.000 dòng). Mẫu được lấy khoảng mỗi 0,4 giây, nên với lượt 20.000 dòng chỉ nên so sánh tổng thời gian; thông lượng từng khâu lấy theo lượt 100.000 dòng.
+
+- Đợt tải 20.000 dòng được phân tích hết sau 4,5 giây (lần đo đầu 138 giây, bước 1 là 8,8 giây). Lượt 100.000 dòng sinh 17.465 `attack.detected` và 9.638 `alert.triggered`; ở mọi lượt không message nào vào dead-letter.
+- Điểm nghẽn hiện là detector (khoảng 5.800 message/s một instance). Key của `log.enriched` đã theo client và trạng thái cửa sổ tính theo client, nên có thể chạy tới 3 instance detector cùng group khi cần.
+- P4 gửi email và webhook cho từng cảnh báo nên xử lý khoảng 200 message/s; với khoảng 14.700 cảnh báo và điểm bất thường của lượt 100.000 dòng, P4 cần thêm khoảng 70 giây sau đợt tải để hết lag (ước tính theo tốc độ đo được) và không khởi động lại lần nào. Đây là trường hợp poll giữa mọi message (bước 1) được thiết kế để bảo vệ.
 
 ## Giới hạn
 

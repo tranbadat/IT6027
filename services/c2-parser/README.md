@@ -42,7 +42,8 @@ Consumer chuẩn hoá: đọc dòng log thô từ `log.raw.ingested`, tách thà
 - **Dòng sai định dạng:** dòng hỏng nằm lẫn với dòng hợp lệ chỉ bị bỏ qua và ghi log warning `skipped malformed log lines` (không dead-letter, để khi xử lý lại không publish trùng các dòng hợp lệ). Khi không dòng nào hợp lệ, `parse_raw` ném `ValueError`; `bus.consume` ([`common/bus.py`](../common/bus.py)) gửi nguyên value sang `waf.deadletter` (header `error`, `source_topic`, `consumer_group`, `dead_lettered_at`) rồi commit. Event sai envelope hoặc thiếu `data.raw` cũng vào dead-letter như vậy.
 - **Request rác trong dòng hợp lệ:** nếu chuỗi request không có dạng `METHOD target HTTP/x` (ví dụ client gửi byte TLS vào cổng HTTP), dòng vẫn được phát với `method`, `protocol` rỗng và toàn bộ chuỗi request nằm trong `path`, để bước phát hiện vẫn phân tích được.
 - **Giải mã URL:** `path_decoded`, `query_decoded` giải mã percent-encoding đúng một lớp (`%2527` thành `%27`) và không đổi `+` thành dấu cách. Bản gốc giữ trong `path`, `query_string`.
-- **Giao nhận:** publish chờ broker xác nhận; nếu không được xác nhận, process dừng để Docker khởi động lại và đọc lại message chưa commit (at-least-once).
+- **Giao nhận:** `bus.consume` xử lý theo batch (các message đã có sẵn, tối đa 500 message hoặc 1 giây xử lý), flush producer và commit một lần cho cả batch. Nếu một message đầu ra không được broker xác nhận, batch không được commit; process dừng để Docker khởi động lại và xử lý lại từ offset đã commit (at-least-once, có thể publish trùng).
+- **Mở rộng:** `log.raw.ingested` có 3 partition và key theo client (xem [C1](../c1-ingestion/README.md)), nên chạy tối đa 3 instance cùng group để chia tải, ví dụ `docker compose up -d --scale c2-parser=3` trong `deploy/pipeline`.
 
 ## Chạy và kiểm thử
 

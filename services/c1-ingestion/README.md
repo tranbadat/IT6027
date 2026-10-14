@@ -5,7 +5,7 @@ Worker thu thập log: tail liên tục access log của Nginx/Apache mục tiê
 ## Vai trò trong pipeline
 
 - **Đầu vào:** các file `$LOG_DIR/nginx/*access.log` và `$LOG_DIR/apache/*access.log`. Tên thư mục con (`nginx` hoặc `apache`) chính là `log_source`. C1 không đọc topic nào nên không có consumer group (không dùng `EVENT_GROUP`).
-- **Đầu ra:** topic `log.raw.ingested`, envelope theo [`contracts/events`](../../contracts/events/README.md) với `source = c1-ingestion` và `request_id` là UUID mới cho mỗi dòng. `data` không có `src_ip` nên key Kafka chỉ là `domain` (viết thường): mọi dòng của một domain vào cùng một partition. Consumer chính là [C2](../c2-parser/README.md).
+- **Đầu ra:** topic `log.raw.ingested`, envelope theo [`contracts/events`](../../contracts/events/README.md) với `source = c1-ingestion` và `request_id` là UUID mới cho mỗi dòng. Key Kafka là `domain|IP` với IP lấy ở trường đầu dòng (Nginx `$remote_addr`, Apache `%h`; hàm `partition_key` trong [`main.py`](main.py)), nên log của một domain chia đều các partition và nhiều instance C2 xử lý song song được, còn mọi dòng của cùng một client vẫn vào một partition. Dòng không bắt đầu bằng IP (log JSON, `%h` là hostname) dùng key `domain` (viết thường). Mọi dòng mới của một vòng poll được gửi liền nhau rồi chờ broker xác nhận một lần (`publish_cycle`, dùng `EventBus.deferred_delivery`); broker không xác nhận thì ghi log lỗi `publish failed` kèm số dòng của vòng và chạy tiếp. Consumer chính là [C2](../c2-parser/README.md).
 
 | Trường `data` | Kiểu | Ý nghĩa |
 |---|---|---|
@@ -36,7 +36,7 @@ Thiếu `EVENT_BUS_URL` hoặc `SCOPE_SERVICE_URL` thì service dừng ngay khi 
 - **Theo dõi bằng inode + offset:** mỗi file giữ `(inode, offset)` và một buffer byte cho phần dòng chưa xong. Mỗi vòng đọc từ offset đến EOF và chỉ phát các dòng đã kết thúc bằng `\n`; phần dở dang chờ vòng sau. Dòng rỗng bị bỏ.
 - **Rotation và truncation:** inode đổi (file bị đổi tên rồi tạo mới) hoặc kích thước nhỏ hơn offset (file bị truncate) thì C1 đọc lại từ đầu file và xoá buffer.
 - **Vị trí bắt đầu:** file có sẵn ở lần quét đầu bắt đầu từ cuối (trừ khi `C1_READ_EXISTING=true`); file xuất hiện sau đó luôn được đọc từ đầu. File biến mất thì ngừng theo dõi, không làm dừng worker.
-- **Lỗi:** publish thất bại chỉ ghi log error `publish failed` rồi tiếp tục; lỗi bất ngờ trong một vòng ghi `poll cycle failed`. Giữa hai vòng, `bus.process_events(0.5)` vừa chờ vừa phục vụ callback của producer.
+- **Lỗi:** broker không xác nhận các dòng của một vòng thì ghi log error `publish failed` (kèm số dòng) rồi tiếp tục, các dòng đó không được gửi lại; lỗi bất ngờ trong một vòng ghi `poll cycle failed`. Giữa hai vòng, `bus.process_events(0.5)` vừa chờ vừa phục vụ callback của producer.
 
 ## Chạy và kiểm thử
 
