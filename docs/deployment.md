@@ -6,7 +6,7 @@ Hệ thống chia thành **3 loại hạ tầng** deploy riêng, nối nhau qua 
 |---|---|---|---|---|
 | **1** | Sensor (thu thập) | `deploy/sensor` | C1 | **Mỗi app cần giám sát** (cạnh Nginx/Apache của app) |
 | **2** | Pipeline (xử lý) | `deploy/pipeline` | C2, C3, detector (D1 + D3), rule-api (D2), nhánh DDoS (profile `ddos`) | Trung tâm |
-| **3** | Platform (quản trị) | `deploy/platform` | Kafka, Postgres, P1–P5, gateway, mailpit | Trung tâm (hub) |
+| **3** | Platform (quản trị) | `deploy/platform` | Kafka, Postgres, P1–P5, gateway (+ Mailpit, webhook-sink khi chạy local) | Trung tâm (hub) |
 
 ```
    App A ── Nginx ──┐                            ┌── Loại 3: PLATFORM (hub) ───────────┐
@@ -33,6 +33,27 @@ make deploy-down    # dừng cả 3 (giữ dữ liệu)
 
 - Dashboard: http://localhost:8080 · Web demo (để bắn thử): http://localhost:8081 · Mailpit: http://localhost:8025
 - `make deploy-up` bật sẵn Sensor ở chế độ `demo` (kèm một Nginx mẫu). Đây chỉ để thử; production dùng Nginx thật của app (xem dưới).
+
+## Môi trường: local và production
+
+Biến `ENV` của Makefile chọn môi trường (mặc định `local`):
+
+```bash
+make deploy-up                    # ENV=local
+make deploy-up ENV=production     # cấu hình production; trên server thật dùng make server-up
+make deploy-down ENV=production   # dùng cùng ENV khi dừng hoặc xem trạng thái (deploy-ps)
+```
+
+Mỗi stack đọc `deploy/<stack>/.env` (secret, cổng, giá trị riêng của máy) rồi `deploy/<stack>/env/<ENV>.env` nếu có; giá trị cùng tên trong file môi trường ghi đè `.env`. Secret chỉ đặt trong `.env` (không commit).
+
+| | `local` | `production` |
+|---|---|---|
+| Platform ([`local.env`](../deploy/platform/env/local.env), [`production.env`](../deploy/platform/env/production.env)) | Mailpit, webhook-sink, Swagger UI; gateway nghe mọi địa chỉ; P2 cấp token cho mọi client | Chỉ Mailpit; gateway chỉ nghe `127.0.0.1`; webhook tắt; P2 chỉ cấp token cho tài khoản trong `AUTH_CLIENTS` |
+| Sensor ([`production.env`](../deploy/sensor/env/production.env)) | Kèm web demo Nginx (profile `demo`) | Không có web demo; C1 đọc `/var/log/nginx/waf` của Nginx trên máy chủ |
+
+- Đổi môi trường trên cùng một máy: `make deploy-down` rồi `make deploy-up ENV=<môi trường mới>`, để container của môi trường cũ được gỡ.
+- `make e2e` dùng web demo và `admin/admin` nên chỉ chạy ở `local`.
+- Dựng trên server thật (Nginx của máy chủ, Cloudflare, một lệnh `make server-up`): [server-deployment.md](server-deployment.md).
 
 ## Cắm Sensor vào Nginx/Apache của một app thật
 

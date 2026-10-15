@@ -1,10 +1,16 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
+# Môi trường triển khai của bộ deploy/ (3 tầng): local (máy dev) hoặc production (server thật).
+# Mỗi stack đọc .env (secret, cổng, giá trị riêng của máy) rồi env/$(ENV).env nếu stack có file đó
+# (cấu hình theo môi trường, ghi đè .env). Dùng: cd deploy/<stack> && $(call stack_compose,<stack>) ...
+ENV ?= local
+DEPLOY_ENVS := local production
+stack_compose = docker compose$(if $(wildcard deploy/$(1)/.env), --env-file .env)$(if $(wildcard deploy/$(1)/env/$(ENV).env), --env-file env/$(ENV).env)
 REDOCLY_IMAGE := redocly/cli:1.34.5
 NGINX_LOG_DIR := /var/log/waf/nginx
 
 .DEFAULT_GOAL := help
-.PHONY: help init config up down restart ps logs clean smoke e2e test test-python test-java net build deploy-init deploy-up deploy-down deploy-ps obs-up obs-down demo demo-apache test-alert build-base \
+.PHONY: help init config up down restart ps logs clean smoke e2e test test-python test-java net build deploy-init deploy-env deploy-up deploy-down deploy-ps server-up server-down obs-up obs-down demo demo-apache test-alert build-base \
         tail-logs rotate-logs mock-reload bus-topology bus-purge bus-peek geoip lint-contracts experiment loadtest
 
 help: ## Liệt kê các lệnh
@@ -65,19 +71,33 @@ build: init build-base ## Build image nền + toàn bộ image service (waf/*:de
 deploy-init: ## Sinh .env cho 3 stack với secret khớp nhau
 	@./scripts/init-deploy-env.sh
 
-deploy-up: net build deploy-init ## Dựng cả 3 stack (platform -> pipeline -> sensor)
-	cd deploy/platform && docker compose up -d --wait
-	cd deploy/pipeline && docker compose up -d --wait
-	cd deploy/sensor && docker compose up -d --wait
+deploy-env: ## Kiểm tra môi trường ENV (local | production) có file cấu hình
+	@test -f deploy/platform/env/$(ENV).env || { \
+	  echo "ENV=$(ENV) không hợp lệ; chọn: $(DEPLOY_ENVS)" >&2; exit 2; }
+	@echo "Môi trường: $(ENV) (deploy/platform/env/$(ENV).env)"
+
+deploy-up: deploy-env net build deploy-init ## Dựng cả 3 stack (platform -> pipeline -> sensor); ENV=local|production
+	cd deploy/platform && $(call stack_compose,platform) up -d --wait
+	cd deploy/pipeline && $(call stack_compose,pipeline) up -d --wait
+	cd deploy/sensor && $(call stack_compose,sensor) up -d --wait
 	@echo "Dashboard: http://localhost:$${GATEWAY_PORT:-8080}  ·  Web demo: http://localhost:8081"
 
-deploy-down: ## Dừng cả 3 stack (giữ dữ liệu)
-	-cd deploy/sensor && docker compose down
-	-cd deploy/pipeline && docker compose down
-	-cd deploy/platform && docker compose down
+deploy-down: deploy-env ## Dừng cả 3 stack (giữ dữ liệu)
+	-cd deploy/sensor && $(call stack_compose,sensor) down
+	-cd deploy/pipeline && $(call stack_compose,pipeline) down
+	-cd deploy/platform && $(call stack_compose,platform) down
 
-deploy-ps: ## Trạng thái cả 3 stack
-	@for s in platform pipeline sensor; do echo "== $$s =="; (cd deploy/$$s && docker compose ps) ; done
+deploy-ps: deploy-env ## Trạng thái cả 3 stack
+	@echo "== platform =="; cd deploy/platform && $(call stack_compose,platform) ps
+	@echo "== pipeline =="; cd deploy/pipeline && $(call stack_compose,pipeline) ps
+	@echo "== sensor =="; cd deploy/sensor && $(call stack_compose,sensor) ps
+
+server-up: ## Server thật (Ubuntu): cấu hình Nginx của máy chủ + dựng toàn bộ Docker (ENV=production) bằng một lệnh
+	@./scripts/server-up.sh
+
+server-down: ## Server thật: dừng mọi container (giữ dữ liệu và cấu hình Nginx)
+	-@$(MAKE) --no-print-directory obs-down
+	@$(MAKE) --no-print-directory deploy-down ENV=production
 
 obs-up: net build deploy-init ## Dựng stack quan sát (Prometheus + Grafana + exporter)
 	$(COMPOSE) --profile obs build metrics-exporter

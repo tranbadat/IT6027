@@ -4,3 +4,6 @@ data/
 
 # Bản export design (canvas) — chỉ để tham khảo, không commit
 docs/design/*.html
+
+# Cấu hình máy chủ thật (có mật khẩu), xem deploy/server/server.env.example
+deploy/server/server.env

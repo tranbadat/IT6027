@@ -201,6 +201,7 @@ services:
       PIPELINE_SERVICE_URL: ${PIPELINE_SERVICE_URL:-http://p3-orchestrator:8000}
       ALERTING_SERVICE_URL: ${ALERTING_SERVICE_URL:-http://p4-alerting:8000}
       DASHBOARD_SERVICE_URL: ${DASHBOARD_SERVICE_URL:-http://p5-dashboard:8000}
+      GATEWAY_TRUSTED_PROXY: ${GATEWAY_TRUSTED_PROXY:-127.0.0.1}
     volumes:
       - ./infra/gateway/templates:/etc/nginx/templates:ro
       - ./infra/gateway/snippets:/etc/nginx/snippets:ro

@@ -22,7 +22,7 @@ Mỗi cảnh báo được gửi đi qua các bước sau:
 1. Dựng bản tóm tắt cảnh báo ([`alerts.py`](alerts.py)) gồm `event_id`, `domain`, `src_ip`, `host`, `url`, `attack_types`, `main_attack_type`, `rule_ids`, `severity`, `score`, `threshold`, `reason`, `triggered_at` (lấy `timestamp` của envelope), `request_id`, `session_id`. `main_attack_type` là phần tử đầu của `attack_types`; thiếu `src_ip`, `severity` hoặc `attack_types` thì nhận `unknown`.
 2. Chống trùng ([`cooldown.py`](cooldown.py)) theo khoá `(domain, src_ip, main_attack_type)`: cùng khoá chỉ được xử lý lại sau `ALERT_COOLDOWN_SECONDS` (mặc định 60, giá trị `<= 0` tắt chống trùng). Cảnh báo bị chặn chỉ tăng bộ đếm `alerts_suppressed`, không lưu và không gửi. Cảnh báo DDoS có `src_ip = "distributed"` nên được gom theo domain.
 3. Lưu vào lịch sử trong bộ nhớ (tối đa 500 bản ghi, [`store.py`](store.py)) và vào Postgres nếu có.
-4. Gửi email qua SMTP (không TLS, không xác thực, timeout 10 giây), tiêu đề `[<SEVERITY>] <attack_types> on <domain>`, nội dung gồm domain, loại tấn công, URL, IP nguồn, mức độ, điểm/ngưỡng, rule, lý do và thời điểm ([`notify.py`](notify.py)).
+4. Gửi email qua SMTP (TLS và đăng nhập theo cấu hình `SMTP_TLS`, `SMTP_USERNAME`; timeout 10 giây), tiêu đề `[<SEVERITY>] <attack_types> on <domain>`, nội dung gồm domain, loại tấn công, URL, IP nguồn, mức độ, điểm/ngưỡng, rule, lý do và thời điểm ([`notify.py`](notify.py)).
 5. Nếu `ALERT_WEBHOOK_URL` khác rỗng: `POST` bản tóm tắt ở bước 1 dưới dạng JSON (timeout 5 giây).
 
 Hai kênh lỗi độc lập với nhau: lỗi chỉ được ghi log và tăng `emails_failed` hoặc `webhooks_failed`, không chuyển sang dead-letter và không làm dừng consumer.
@@ -65,6 +65,9 @@ curl -s 'localhost:8080/api/alerts/?limit=5&domain=shop.local' -H "Authorization
 | `DATABASE_URL` | rỗng | DSN Postgres; rỗng thì chỉ lưu lịch sử trong bộ nhớ |
 | `SMTP_HOST` | `mailpit` | Máy chủ SMTP |
 | `SMTP_PORT` | `1025` | Cổng SMTP |
+| `SMTP_TLS` | `none` | `none` (Mailpit), `starttls` (cổng 25/587), `ssl` (cổng 465); giá trị khác thì dừng khi khởi động |
+| `SMTP_TLS_VERIFY` | `true` | `false` = vẫn mã hoá nhưng không xác minh chứng chỉ máy chủ (chỉ dùng khi máy chủ SMTP có chứng chỉ hết hạn hoặc tự ký) |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | rỗng | Đăng nhập SMTP relay; rỗng thì không đăng nhập |
 | `ALERT_EMAIL_FROM` | bắt buộc | Địa chỉ gửi |
 | `ALERT_EMAIL_TO` | bắt buộc | Địa chỉ nhận (một địa chỉ) |
 | `ALERT_WEBHOOK_URL` | rỗng | URL nhận webhook; rỗng thì tắt webhook |
@@ -73,7 +76,7 @@ curl -s 'localhost:8080/api/alerts/?limit=5&domain=shop.local' -H "Authorization
 | `HTTP_PORT` | `8000` | Cổng HTTP |
 | `LOG_LEVEL` | `info` | Mức log ([`common/logging.py`](../common/logging.py)) |
 
-Thiếu biến bắt buộc thì service dừng ngay khi khởi động. [`docker-compose.yml`](../../docker-compose.yml) và [`deploy/platform/docker-compose.yml`](../../deploy/platform/docker-compose.yml) đặt `SMTP_HOST=mailpit`, `SMTP_PORT=1025`, `ALERT_EMAIL_FROM=waf-alerts@waf.local`, `ALERT_EMAIL_TO=soc@waf.local`, `ALERT_WEBHOOK_URL` mặc định `http://webhook-sink:8080/alerts`; `ALERT_COOLDOWN_SECONDS` chưa được khai báo nên dùng mặc định.
+Thiếu biến bắt buộc thì service dừng ngay khi khởi động. [`docker-compose.yml`](../../docker-compose.yml) đặt `SMTP_HOST=mailpit`, `SMTP_PORT=1025`, `ALERT_EMAIL_FROM=waf-alerts@waf.local`, `ALERT_EMAIL_TO=soc@waf.local`, `ALERT_WEBHOOK_URL` mặc định `http://webhook-sink:8080/alerts`. Ở bản 3 tầng, [`deploy/platform/docker-compose.yml`](../../deploy/platform/docker-compose.yml) lấy các biến SMTP và `ALERT_*` theo môi trường ([`env/local.env`](../../deploy/platform/env/local.env), [`env/production.env`](../../deploy/platform/env/production.env)); cả hai đều gửi tới Mailpit, production tắt webhook. `ALERT_COOLDOWN_SECONDS` chưa được khai báo nên dùng mặc định.
 
 ## Chạy và kiểm thử
 

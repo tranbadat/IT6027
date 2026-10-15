@@ -92,9 +92,25 @@
     .msg.show{display:block}.msg.ok{background:var(--ok-soft);color:var(--ok)}.msg.err{background:var(--danger-soft);color:var(--danger)}
     .linkcard{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border:1px solid var(--line);border-radius:10px;margin-bottom:10px}
     .hint{color:var(--muted);font-size:12px;margin-top:8px}
+    /* Đăng nhập: chỉ hiện khi gateway không cấp token cho admin/admin (production đặt AUTH_CLIENTS) */
+    .login{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:rgba(27,36,48,.45)}
+    .login[hidden]{display:none}
+    .login form{width:min(360px,92vw)}
+    .login h2{font-size:16px;color:var(--ink);margin:0 0 4px}
+    .login .btn{width:100%;margin-top:16px}
   </style>
 </head>
 <body>
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="panel">
+      <h2>Đăng nhập</h2>
+      <div class="hint">Tài khoản do quản trị cấu hình trong AUTH_CLIENTS.</div>
+      <label for="login-id">Tài khoản</label><input id="login-id" value="admin" autocomplete="username" required>
+      <label for="login-secret">Mật khẩu</label><input id="login-secret" type="password" autocomplete="current-password" required>
+      <button class="btn primary" type="submit">Đăng nhập</button>
+      <div id="login-msg" class="msg err"></div>
+    </form>
+  </div>
   <aside>
     <div class="brand"><b>Bảng điều khiển WAF</b><div class="sub">NGINX · WAF Log Analyzer</div></div>
     <nav id="nav">
@@ -281,9 +297,23 @@
     $("nav").addEventListener("click",e=>{const b=e.target.closest(".navitem");if(b)show(b.dataset.nav);});
     $("refresh-btn").addEventListener("click",()=>{(LOADERS[location.hash.slice(1)||"overview"]||(()=>{}))();});
 
+    const requestToken=async(id,secret)=>(await api("/api/auth/token",{method:"POST",
+      body:JSON.stringify({client_id:id,client_secret:secret})})).ok;
+    const sessionValid=async()=>(await api("/api/dashboard/summary")).ok;
+    function askLogin(){
+      return new Promise(resolve=>{
+        const box=$("login"),msg=$("login-msg");box.hidden=false;$("login-secret").focus();
+        $("login-form").onsubmit=async e=>{e.preventDefault();msg.classList.remove("show");
+          let ok=false;try{ok=await requestToken($("login-id").value.trim(),$("login-secret").value);}catch(err){}
+          if(ok){box.hidden=true;$("login-secret").value="";resolve();}
+          else{msg.textContent="Sai tài khoản hoặc mật khẩu (hoặc gateway không phản hồi).";msg.classList.add("show");}};
+      });
+    }
+    // Cookie còn hạn -> dùng tiếp; chạy local (AUTH_ALLOW_ANY) -> tự đăng nhập admin/admin như trước;
+    // production (AUTH_CLIENTS) -> hiện form đăng nhập.
     async function getToken(){
-      try{const r=await api("/api/auth/token",{method:"POST",body:'{"client_id":"admin","client_secret":"admin"}'});
-        if(!r.ok)throw 0;setPill("auth-status","auth: ok","ok");}catch(e){setPill("auth-status","auth: lỗi","err");}
+      try{if(!(await sessionValid())&&!(await requestToken("admin","admin")))await askLogin();
+        setPill("auth-status","auth: ok","ok");}catch(e){setPill("auth-status","auth: lỗi","err");}
     }
 
     /* ---------- sự kiện bảo mật -> hàng bảng ---------- */
@@ -433,9 +463,12 @@
       else{const j=await r.json().catch(()=>null);ruleMsg("Không xoá được ("+r.status+"): "+((j&&(j.error||j.message))||"Lỗi"),false);}});
 
     /* ---------- settings ---------- */
-    function loadSettings(){const h=location.hostname;
-      const L=[["Grafana (metrics + logs + SOC)","http://"+h+":3000"],["Prometheus","http://"+h+":9090"],
+    async function loadSettings(){const h=location.hostname;
+      let L=[["Grafana (metrics + logs + SOC)","http://"+h+":3000"],["Prometheus","http://"+h+":9090"],
         ["Mailpit (email cảnh báo)","http://"+h+":8025"],["Kafka UI (profile tools)","http://"+h+":8085"],["Swagger (OpenAPI)","http://"+h+":8090"]];
+      // Server thật: liên kết theo domain lấy từ DASHBOARD_LINKS của P5 (rỗng -> giữ mặc định host:cổng).
+      try{const r=await api("/api/dashboard/links");const j=r.ok?await r.json():null;
+        if(j&&j.links&&j.links.length)L=j.links.map(x=>[x.name,x.url]);}catch(e){}
       $("links").innerHTML=L.map(([n,u])=>'<div class="linkcard"><span>'+esc(n)+'</span><a href="'+u+'" target="_blank" rel="noopener">'+esc(u)+" ↗</a></div>").join("");}
 
     const LOADERS={overview:loadOverview,realtime:renderEventTables,history:()=>{},domains:loadDomains,rules:loadRules,settings:loadSettings};

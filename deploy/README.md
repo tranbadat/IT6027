@@ -11,10 +11,15 @@ Xem hướng dẫn đầy đủ tại [`../docs/deployment.md`](../docs/deployme
 Nhanh (một máy):
 
 ```bash
-make deploy-up     # dựng cả 3 stack
-make deploy-ps     # trạng thái
-make deploy-down   # dừng
+make deploy-up                  # dựng cả 3 stack, môi trường local
+make deploy-up ENV=production   # cấu hình production (server thật dùng `make server-up`, xem dưới)
+make deploy-ps                  # trạng thái
+make deploy-down                # dừng
 ```
+
+Cấu hình theo môi trường của từng stack: `<stack>/env/<ENV>.env`, xem mục "Môi trường" trong [`../docs/deployment.md`](../docs/deployment.md).
+
+Server thật (Ubuntu, Nginx chạy trên máy chủ, còn lại chạy Docker): `make server-up`, cấu hình trong [`server/`](server/), hướng dẫn ở [`../docs/server-deployment.md`](../docs/server-deployment.md).
 
 Từng stack chạy riêng: `cd deploy/<stack> && cp .env.example .env && docker compose up -d`
 (cần `docker network create waf-net` trước, hoặc `make net`).

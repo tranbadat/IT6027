@@ -99,6 +99,40 @@ paths:
                 data: {"event":"attack.detected","domain":"shop.local","timestamp":"2026-10-14T03:53:33Z","data":{"attack_type":"sql_injection","rule_id":"SQLI_UNION_SELECT","severity":"critical","src_ip":"172.21.0.1","url":"/api/products?id=1%20UNION%20SELECT%20pw"}}
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /dashboard/links:
+    get:
+      tags: [dashboard]
+      operationId: settingsLinks
+      summary: Liên kết hiển thị ở trang Kết nối
+      description: |
+        Đọc từ biến môi trường `DASHBOARD_LINKS` của P5 (dạng `Tên|URL;Tên|URL`, chỉ nhận URL http/https).
+        Danh sách rỗng thì giao diện dùng liên kết mặc định theo hostname và cổng (chạy local).
+      responses:
+        '200':
+          description: Danh sách liên kết, có thể rỗng.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [links]
+                properties:
+                  links:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, url]
+                      properties:
+                        name:
+                          type: string
+                        url:
+                          type: string
+                          format: uri
+              example:
+                links:
+                  - name: Mailpit (email cảnh báo)
+                    url: https://mail.tranbadat.vn
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /healthz:
     servers:
       - url: http://p5-dashboard:8000

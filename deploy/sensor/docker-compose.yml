@@ -25,6 +25,9 @@ services:
       # Đặt domain của app khi file log là access.log (không suy được từ tên file).
       C1_DOMAIN: ${C1_DOMAIN:-}
       C1_READ_EXISTING: ${C1_READ_EXISTING:-false}
+    # Nhóm được đọc log của Nginx trên máy chủ (env/production.env đặt gid của adm). Mặc định là nhóm
+    # riêng của user waf trong image (10001), không thêm quyền gì.
+    group_add: ["${SENSOR_LOG_GID:-10001}"]
     volumes:
       # Mặc định dùng volume của web demo; production đặt SENSOR_NGINX_LOG_DIR=/var/log/nginx
       # (thư mục log Nginx của app) để bind trực tiếp, chỉ đọc.

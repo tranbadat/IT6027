@@ -1,0 +1,16 @@
+# Xoay vòng access log của các site demo (cài bởi scripts/server-up.sh vào /etc/logrotate.d/waf-sites).
+# C1 nhận ra file mới sau khi xoay vòng; file .1 và .gz không có hậu tố .access.log nên bị bỏ qua.
+# File mới có quyền 0640 www-data:adm; C1 đọc được nhờ nhóm adm (deploy/sensor/env/production.env).
+@@SITE_LOG_DIR@@/*.access.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 www-data adm
+    sharedscripts
+    postrotate
+        invoke-rc.d nginx rotate >/dev/null 2>&1 || true
+    endscript
+}

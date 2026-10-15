@@ -1,0 +1,35 @@
+
+# Site demo được giám sát: @@DOMAIN@@. Access log định dạng waf_combined, tên <domain>.access.log
+# để C1 suy ra domain từ tên file; thư mục log chỉ chứa log của các site này.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name @@DOMAIN@@;
+    server_tokens off;
+
+    access_log @@SITE_LOG_DIR@@/@@DOMAIN@@.access.log waf_combined;
+    error_log  /var/log/nginx/@@DOMAIN@@.error.log warn;
+
+    root @@SITE_WEB_ROOT@@/@@DOMAIN@@;
+
+    # Giả lập backend ứng dụng: mọi request /api/* đều tới được app và trả 200.
+    location /api/ {
+        default_type application/json;
+        return 200 '{"status":"ok"}';
+    }
+
+    # Trang nội dung ảo (sản phẩm, danh mục, bài viết): luôn tồn tại.
+    location ~ ^/(p|c|blog)/ {
+        default_type text/html;
+        return 200 '<!doctype html><title>@@DOMAIN@@</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/app.js"></script>';
+    }
+
+    location = /search {
+        default_type text/html;
+        return 200 '<!doctype html><title>search</title>';
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

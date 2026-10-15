@@ -117,7 +117,9 @@ services:
       timeout: 3s
       retries: 12
 
+  # SMTP giả lập nhận email cảnh báo (profile mail, bật ở cả env/local.env và env/production.env).
   mailpit:
+    profiles: [mail]
     image: axllent/mailpit:v1.27
     restart: unless-stopped
     logging: *logging
@@ -159,11 +161,16 @@ services:
     image: waf/p4-alerting:dev
     environment:
       <<: *svc-env
-      SMTP_HOST: mailpit
-      SMTP_PORT: "1025"
-      ALERT_EMAIL_FROM: waf-alerts@waf.local
-      ALERT_EMAIL_TO: soc@waf.local
-      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://webhook-sink:8080/alerts}
+      # Kênh gửi cảnh báo theo môi trường (env/local.env, env/production.env): mặc định Mailpit.
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_TLS: ${SMTP_TLS:-none}
+      SMTP_TLS_VERIFY: ${SMTP_TLS_VERIFY:-true}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-waf-alerts@waf.local}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-soc@waf.local}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL-http://webhook-sink:8080/alerts}
       ALERT_THRESHOLDS: ${ALERT_THRESHOLDS:-}
 
   p5-dashboard:
@@ -171,6 +178,8 @@ services:
     image: waf/p5-dashboard:dev
     environment:
       <<: *svc-env
+      # Liên kết trang Cài đặt trên server thật, dạng "Tên|URL;Tên|URL" (rỗng = host:cổng khi chạy local).
+      DASHBOARD_LINKS: ${DASHBOARD_LINKS:-}
 
   gateway:
     image: nginx:1.28-alpine
@@ -178,8 +187,11 @@ services:
     logging: *logging
     networks: [waf-net]
     ports:
-      - "${GATEWAY_PORT:-8080}:80"
+      # Server thật đặt GATEWAY_BIND=127.0.0.1 (env/production.env): chỉ Nginx của máy chủ truy cập được.
+      # Cổng Docker publish ra 0.0.0.0 bỏ qua ufw nên không được mở thẳng ra Internet.
+      - "${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT:-8080}:80"
     environment:
+      GATEWAY_TRUSTED_PROXY: ${GATEWAY_TRUSTED_PROXY:-127.0.0.1}
       AUTH_SERVICE_URL: http://p2-auth:8000
       SCOPE_SERVICE_URL: http://p1-scope:8000
       RULES_SERVICE_URL: ${RULES_SERVICE_URL:-http://rule-api:8090}   # Rule API của detector, ở stack Pipeline
@@ -191,7 +203,7 @@ services:
       - ../../infra/gateway/snippets:/etc/nginx/snippets:ro
     healthcheck: *nginx-healthcheck
 
-  # Nhận webhook cảnh báo khi demo (profile dev).
+  # Nhận webhook cảnh báo khi chạy local (profile dev).
   webhook-sink:
     profiles: [dev]
     image: mendhak/http-https-echo:37

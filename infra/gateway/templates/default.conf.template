@@ -23,6 +23,12 @@ server {
     absolute_redirect off;
     client_max_body_size 1m;
 
+    # IP thật của client khi gateway đứng sau reverse proxy (Nginx của máy chủ, xem deploy/server/):
+    # chỉ tin header X-Real-IP từ dải GATEWAY_TRUSTED_PROXY. Mặc định 127.0.0.1 = không tin kết nối
+    # nào (kết nối tới gateway luôn đến từ mạng Docker), rate limit tính theo IP kết nối như trước.
+    set_real_ip_from ${GATEWAY_TRUSTED_PROXY};
+    real_ip_header X-Real-IP;
+
     set $auth_upstream      ${AUTH_SERVICE_URL};
     set $scope_upstream     ${SCOPE_SERVICE_URL};
     set $rules_upstream     ${RULES_SERVICE_URL};

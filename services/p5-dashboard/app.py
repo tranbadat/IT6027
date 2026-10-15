@@ -4,6 +4,7 @@ Route:
 - GET /                    -> trang HTML dashboard (public, gateway map "/").
 - GET /dashboard/summary   -> JSON tổng hợp (gateway map /api/dashboard/summary, cần JWT).
 - GET /dashboard/stream    -> SSE (gateway map /api/dashboard/stream, cần JWT).
+- GET /dashboard/links     -> liên kết trang Cài đặt từ DASHBOARD_LINKS (cần JWT).
 - GET /healthz             -> healthcheck.
 """
 import asyncio
@@ -16,6 +17,19 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 _INDEX_PATH = os.path.join(os.path.dirname(__file__), "index.html")
 # Khoảng thời gian gửi comment keep-alive khi không có event (giữ kết nối SSE sống).
 _KEEPALIVE_SECONDS = 15
+_LINK_SCHEMES = ("http://", "https://")
+
+
+def parse_links(raw: str | None) -> list[dict]:
+    """DASHBOARD_LINKS = "Tên|URL;Tên 2|URL 2" -> [{"name", "url"}]. Bỏ mục sai định dạng và URL
+    không phải http(s) (URL được chèn vào href của trang)."""
+    links = []
+    for entry in (raw or "").split(";"):
+        name, sep, url = entry.partition("|")
+        name, url = name.strip(), url.strip()
+        if sep and name and url.lower().startswith(_LINK_SCHEMES):
+            links.append({"name": name, "url": url})
+    return links
 
 
 def _load_index_html() -> str:
@@ -46,9 +60,10 @@ async def _event_stream(request: Request, hub):
         hub.unsubscribe(queue)
 
 
-def create_app(store, hub, repo=None) -> FastAPI:
+def create_app(store, hub, repo=None, links=None) -> FastAPI:
     app = FastAPI(title="P5 Dashboard Service", version="0.1.0")
     index_html = _load_index_html()
+    settings_links = list(links or [])
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -66,6 +81,11 @@ def create_app(store, hub, repo=None) -> FastAPI:
     @app.get("/dashboard/summary")
     def summary() -> dict:
         return store.summary()
+
+    # Rỗng -> trang Cài đặt dùng liên kết mặc định theo host:cổng (chạy local).
+    @app.get("/dashboard/links")
+    def settings_page_links() -> dict:
+        return {"links": settings_links}
 
     # Lịch sử tấn công BỀN từ DB (sống sót restart). Gateway: /api/dashboard/attacks (JWT).
     @app.get("/dashboard/attacks")

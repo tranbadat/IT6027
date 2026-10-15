@@ -77,6 +77,38 @@ def test_recent_feed_only_realtime_events():
     assert "stage.completed" not in events  # stage không vào feed realtime
 
 
+# ---------- Liên kết ở trang Cài đặt (DASHBOARD_LINKS) ----------
+
+def test_parse_links_reads_name_and_url_pairs():
+    import app as app_mod
+    links = app_mod.parse_links("Mailpit|https://mail.tranbadat.vn; Grafana | http://10.0.0.5:3000 ")
+    assert links == [{"name": "Mailpit", "url": "https://mail.tranbadat.vn"},
+                     {"name": "Grafana", "url": "http://10.0.0.5:3000"}], links
+
+
+def test_parse_links_skips_malformed_and_non_http_urls():
+    import app as app_mod
+    links = app_mod.parse_links("no-separator;Bad|javascript:alert(1);Empty|;|https://x.y;Ok|https://ok.example")
+    assert links == [{"name": "Ok", "url": "https://ok.example"}], links
+
+
+def test_links_route_returns_configured_links():
+    from fastapi.testclient import TestClient
+    import app as app_mod
+    from stream import StreamHub
+    client = TestClient(app_mod.create_app(store_mod.AggregateStore(), StreamHub(),
+                                           links=app_mod.parse_links("Mailpit|https://mail.tranbadat.vn")))
+    assert client.get("/dashboard/links").json() == {"links": [{"name": "Mailpit", "url": "https://mail.tranbadat.vn"}]}
+
+
+def test_links_route_is_empty_without_configuration():
+    from fastapi.testclient import TestClient
+    import app as app_mod
+    from stream import StreamHub
+    client = TestClient(app_mod.create_app(store_mod.AggregateStore(), StreamHub()))
+    assert client.get("/dashboard/links").json() == {"links": []}
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

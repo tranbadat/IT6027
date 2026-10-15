@@ -45,7 +45,7 @@ def main() -> None:
     hub = StreamHub()
     repo = _init_repo()
     handler = consumer_mod.build_handler(store, hub, repo)
-    app = app_mod.create_app(store, hub, repo)
+    app = app_mod.create_app(store, hub, repo, links=app_mod.parse_links(config.env("DASHBOARD_LINKS", "")))
 
     @app.on_event("startup")
     def _startup() -> None:

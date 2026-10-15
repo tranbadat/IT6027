@@ -23,12 +23,33 @@ _DEFAULT_COOLDOWN_SECONDS = 60
 
 
 def _load_smtp_config() -> notify_mod.SmtpConfig:
-    return notify_mod.SmtpConfig(
+    """Cấu hình SMTP theo môi trường (deploy/platform/env/<ENV>.env); SMTP_TLS sai thì dừng ngay."""
+    cfg = notify_mod.SmtpConfig(
         host=config.env("SMTP_HOST", "mailpit"),
         port=config.env_int("SMTP_PORT", 1025),
         sender=config.env("ALERT_EMAIL_FROM", required=True),
         recipient=config.env("ALERT_EMAIL_TO", required=True),
+        tls=(config.env("SMTP_TLS", "none") or "none").strip().lower(),
+        username=config.env("SMTP_USERNAME", "") or "",
+        password=config.env("SMTP_PASSWORD", "") or "",
+        verify_tls=_env_bool("SMTP_TLS_VERIFY", True),
     )
+    if cfg.username and cfg.tls == "none":
+        log.warning("SMTP credentials are sent without TLS", host=cfg.host)
+    if cfg.tls != "none" and not cfg.verify_tls:
+        log.warning("SMTP TLS certificate is not verified (SMTP_TLS_VERIFY=false)", host=cfg.host)
+    log.info("smtp configured", host=cfg.host, port=cfg.port, tls=cfg.tls, verify_tls=cfg.verify_tls,
+             login=bool(cfg.username), recipient=cfg.recipient)
+    return cfg
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (config.env(name, "") or "").strip().lower()
+    if not raw:
+        return default
+    if raw not in ("true", "false"):
+        raise ValueError(f"{name} must be true or false, got {raw!r}")
+    return raw == "true"
 
 
 def _init_repo():

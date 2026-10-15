@@ -22,7 +22,7 @@ Dashboard realtime: tổng hợp event trong bộ nhớ, lưu lịch sử tấn 
 
 ### Giao diện
 
-[`index.html`](index.html) là SPA một file, không dùng tiền tố `/dashboard`. Khi mở trang, SPA gọi `POST /api/auth/token` (client `admin`/`admin`) để P2 đặt cookie `waf_token`, sau đó mọi `fetch` và `EventSource` đều gửi kèm cookie. Kết nối SSE `GET /api/dashboard/stream` được mở ngay khi tải trang.
+[`index.html`](index.html) là SPA một file, không dùng tiền tố `/dashboard`. Khi mở trang, SPA kiểm tra cookie `waf_token` còn hạn (`GET /api/dashboard/summary`); nếu không, gọi `POST /api/auth/token` với `admin`/`admin` (chạy local, P2 ở chế độ `AUTH_ALLOW_ANY`). P2 từ chối (production chỉ nhận tài khoản trong `AUTH_CLIENTS`) thì SPA hiện form đăng nhập. P2 đặt cookie `waf_token`, sau đó mọi `fetch` và `EventSource` đều gửi kèm cookie. Kết nối SSE `GET /api/dashboard/stream` được mở ngay khi tải trang.
 
 | View | API gọi |
 |---|---|
@@ -31,7 +31,7 @@ Dashboard realtime: tổng hợp event trong bộ nhớ, lưu lịch sử tấn 
 | Lịch sử tấn công | `GET /api/dashboard/attacks?limit=200` kèm `domain`, `attack_type` nếu nhập |
 | Domain | P1: `GET /api/scope/allowlist`, `POST /api/scope/allowlist`, `DELETE /api/scope/allowlist/{target}` |
 | Rule pattern | rule-api: `GET /api/rules/`, `POST /api/rules/`, `PUT /api/rules/{id}`, `DELETE /api/rules/{id}`, `POST /api/rules/validate` |
-| Kết nối | Không gọi API; liên kết tới Grafana (:3000), Prometheus (:9090), Mailpit (:8025), Kafka UI (:8085), Swagger UI (:8090) theo hostname hiện tại |
+| Kết nối | `GET /api/dashboard/links`; danh sách rỗng thì dùng liên kết mặc định tới Grafana (:3000), Prometheus (:9090), Mailpit (:8025), Kafka UI (:8085), Swagger UI (:8090) theo hostname hiện tại |
 
 ## API HTTP
 
@@ -44,6 +44,7 @@ OpenAPI: [`contracts/openapi/dashboard.yaml`](../../contracts/openapi/dashboard.
 | `GET` | `/dashboard/summary` | `/api/dashboard/summary` | JWT |
 | `GET` | `/dashboard/attacks` | `/api/dashboard/attacks` | JWT |
 | `GET` | `/dashboard/stream` | `/api/dashboard/stream` | JWT (trình duyệt dùng cookie `waf_token`) |
+| `GET` | `/dashboard/links` | `/api/dashboard/links` | JWT |
 | `GET` | `/healthz` | không (gateway có `/healthz` riêng) | không |
 
 JWT do gateway kiểm tra qua P2. Gateway trả 404 cho `/dashboard` và `/dashboard/...` gọi thẳng, buộc đi qua `/api/dashboard/`.
@@ -58,6 +59,7 @@ JWT do gateway kiểm tra qua P2. Gateway trả 404 cho `/dashboard` và `/dashb
 | `EVENT_BUS_URL` | bắt buộc | Bootstrap servers Kafka |
 | `EVENT_GROUP` | `p5-dashboard` | Consumer group |
 | `DATABASE_URL` | rỗng | DSN Postgres; rỗng thì không lưu lịch sử, `/dashboard/attacks` trả danh sách rỗng |
+| `DASHBOARD_LINKS` | rỗng | Liên kết trang Kết nối trên server thật, dạng `Tên\|URL;Tên\|URL` (chỉ nhận URL http/https); `make server-up` đặt liên kết Mailpit |
 | `HTTP_PORT` | `8000` | Cổng HTTP |
 | `LOG_LEVEL` | `info` | Mức log ([`common/logging.py`](../common/logging.py)) |
 
