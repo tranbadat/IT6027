@@ -3,13 +3,20 @@
 
 # Dashboard realtime -> gateway (Docker, chỉ nghe 127.0.0.1)
 server {
-    listen 80;
-    listen [::]:80;
+    listen @@LISTEN@@;
+    listen [::]:@@LISTEN@@;
+    include @@SERVER_SNIPPET@@;
     server_name @@WAF_DOMAIN@@;
     server_tokens off;
     client_max_body_size 1m;
     access_log /var/log/nginx/waf-dashboard.access.log;
     error_log  /var/log/nginx/waf-dashboard.error.log warn;
+
+    # IP của client như Nginx thấy (sau khi lấy IP thật qua Cloudflare nếu có); kịch bản e2e dùng để đối chiếu.
+    location = /_waf/client-ip {
+        default_type text/plain;
+        return 200 "$remote_addr\n";
+    }
 
     location / {
         proxy_pass http://127.0.0.1:@@GATEWAY_PORT@@;
@@ -29,8 +36,9 @@ server {
 
 # Mailpit (email cảnh báo) -> Docker 127.0.0.1, yêu cầu đăng nhập
 server {
-    listen 80;
-    listen [::]:80;
+    listen @@LISTEN@@;
+    listen [::]:@@LISTEN@@;
+    include @@SERVER_SNIPPET@@;
     server_name @@MAIL_DOMAIN@@;
     server_tokens off;
     access_log /var/log/nginx/waf-mailpit.access.log;

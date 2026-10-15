@@ -2,8 +2,9 @@
 # Site demo được giám sát: @@DOMAIN@@. Access log định dạng waf_combined, tên <domain>.access.log
 # để C1 suy ra domain từ tên file; thư mục log chỉ chứa log của các site này.
 server {
-    listen 80;
-    listen [::]:80;
+    listen @@LISTEN@@;
+    listen [::]:@@LISTEN@@;
+    include @@SERVER_SNIPPET@@;
     server_name @@DOMAIN@@;
     server_tokens off;
 

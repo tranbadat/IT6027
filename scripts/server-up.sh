@@ -3,13 +3,17 @@
 #   1. cài gói còn thiếu (Nginx, Docker Engine + Compose plugin...);
 #   2. dựng 3 stack Docker với ENV=production (+ observability nếu OBSERVABILITY=true);
 #   3. cấu hình Nginx của máy chủ: site demo được giám sát, WAF_DOMAIN -> dashboard, MAIL_DOMAIN -> Mailpit,
-#      IP thật của client qua Cloudflare, logrotate cho log của site demo;
+#      logrotate cho log của site demo, và theo ACCESS_MODE:
+#        cloudflare    IP thật của client qua Cloudflare (Cloudflare phục vụ HTTPS, nối về bằng HTTP)
+#        direct-https  DNS trỏ thẳng: tự lấy chứng chỉ Let's Encrypt, chuyển HTTP sang HTTPS
+#        direct-http   DNS trỏ thẳng, chỉ HTTP;
 #   4. thêm site demo vào scope và kiểm tra nhanh.
 # Chạy lại an toàn (cập nhật cấu hình, build lại image đã đổi). Cấu hình: deploy/server/server.env
 # (tạo từ server.env.example ở lần đầu). Hướng dẫn: docs/server-deployment.md
 #
 # Dùng: scripts/server-up.sh                 dựng/cập nhật toàn bộ
 #       scripts/server-up.sh --print-nginx   chỉ in cấu hình Nginx sẽ cài (không thay đổi máy)
+# Biến môi trường cùng tên ghi đè server.env, ví dụ: ACCESS_MODE=direct-https scripts/server-up.sh --print-nginx
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,6 +26,10 @@ SITE_LOG_DIR=/var/log/nginx/waf
 SITE_WEB_ROOT=/var/www/waf-demo
 NGINX_SITE=/etc/nginx/sites-available/waf.conf
 MAIL_HTPASSWD=/etc/nginx/waf-mailpit.htpasswd
+SERVER_SNIPPET=/etc/nginx/snippets/waf-server.conf
+ACME_ROOT=/var/www/letsencrypt
+CERT_NAME=waf
+CERT_DIR=/etc/letsencrypt/live/$CERT_NAME
 CLOUDFLARE_IPS_URL=https://www.cloudflare.com/ips
 DOMAIN_RE='^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'
 
@@ -54,14 +62,14 @@ set_env() {
   rm -f "$tmp"
 }
 
+# shellcheck source-path=SCRIPTDIR source=lib/server-env.sh
+. "$ROOT/scripts/lib/server-env.sh"
+
 # Cấu hình từ server.env (hoặc server.env.example khi chỉ xem trước, chưa có server.env).
 load_config() {
   local source_file=$SERVER_ENV
   [[ -f $source_file ]] || source_file="$SERVER_DIR/server.env.example"
-  set -a
-  # shellcheck source=/dev/null
-  . "$source_file"
-  set +a
+  load_server_env "$source_file"
   local var domain
   for var in WAF_DOMAIN MAIL_DOMAIN DEMO_DOMAINS DASHBOARD_USER MAIL_UI_USER; do
     [[ -n ${!var:-} ]] || die "thiếu $var trong deploy/server/server.env"
@@ -71,7 +79,12 @@ load_config() {
     [[ $domain =~ $DOMAIN_RE ]] || die "domain không hợp lệ: '$domain'"
   done
   [[ $DASHBOARD_USER =~ ^[A-Za-z0-9_.-]+$ ]] || die "DASHBOARD_USER chỉ gồm chữ, số, . _ -"
+  if [[ -n ${LETSENCRYPT_EMAIL:-} && ! $LETSENCRYPT_EMAIL =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]]; then
+    die "LETSENCRYPT_EMAIL không hợp lệ: '$LETSENCRYPT_EMAIL'"
+  fi
 }
+
+all_domains() { echo "$WAF_DOMAIN $MAIL_DOMAIN $DEMO_DOMAINS"; }
 
 # Tạo server.env ở lần đầu và sinh mật khẩu còn trống, ghi lại vào server.env.
 ensure_server_env() {
@@ -113,6 +126,9 @@ install_packages() {
   for tool in nginx curl openssl make python3; do
     command -v "$tool" > /dev/null || missing+=("$tool")
   done
+  if [[ $ACCESS_MODE == direct-https ]] && ! command -v certbot > /dev/null; then
+    missing+=(certbot)
+  fi
   if ((${#missing[@]})); then
     step "Cài gói: ${missing[*]}"
     $SUDO apt-get update -q
@@ -144,7 +160,7 @@ prepare_stack_env() {
   set_env "$PLATFORM_ENV" GATEWAY_TRUSTED_PROXY "$subnet"
   set_env "$PLATFORM_ENV" AUTH_CLIENTS "$DASHBOARD_USER:$DASHBOARD_PASSWORD"
   set_env "$PLATFORM_ENV" SCOPE_ALLOWLIST "${demo_list%,}"
-  set_env "$PLATFORM_ENV" DASHBOARD_LINKS "\"Mailpit (email cảnh báo)|${PUBLIC_SCHEME:-https}://$MAIL_DOMAIN\""
+  set_env "$PLATFORM_ENV" DASHBOARD_LINKS "\"Mailpit (email cảnh báo)|$PUBLIC_SCHEME://$MAIL_DOMAIN\""
 }
 
 start_containers() {
@@ -161,8 +177,8 @@ start_containers() {
 # Dải IP của Cloudflare: tải bản mới nhất, không được thì dùng bản dự phòng trong repo.
 cloudflare_realip() {
   echo "# WAF Log Analyzer: sinh bởi scripts/server-up.sh. IP thật của client khi đi qua Cloudflare."
-  if [[ ${BEHIND_CLOUDFLARE:-true} != true ]]; then
-    echo "# BEHIND_CLOUDFLARE=false: không dùng."
+  if [[ $ACCESS_MODE != cloudflare ]]; then
+    echo "# ACCESS_MODE=$ACCESS_MODE: client nối thẳng tới máy chủ, không cần."
     return
   fi
   local ranges
@@ -176,28 +192,84 @@ cloudflare_realip() {
   echo "real_ip_header CF-Connecting-IP;"
 }
 
+# Giai đoạn cấu hình Nginx: http (cloudflare, direct-http), acme (direct-https chưa có chứng chỉ:
+# chỉ HTTP, phục vụ xác minh Let's Encrypt), tls (direct-https đã có chứng chỉ).
+nginx_phase() {
+  if [[ $ACCESS_MODE != direct-https ]]; then
+    echo http
+  elif $SUDO test -s "$CERT_DIR/fullchain.pem"; then
+    echo tls
+  else
+    echo acme
+  fi
+}
+
+# Đoạn cấu hình chèn vào mọi server block của các domain (include $SERVER_SNIPPET).
+server_snippet() {
+  echo "# WAF Log Analyzer: sinh bởi scripts/server-up.sh (ACCESS_MODE=$ACCESS_MODE, giai đoạn $1)."
+  case $1 in
+    acme)
+      echo "# Xác minh HTTP-01 của Let's Encrypt khi lấy chứng chỉ lần đầu."
+      echo "location ^~ /.well-known/acme-challenge/ {"
+      echo "    root $ACME_ROOT;"
+      echo "    default_type text/plain;"
+      echo "    auth_basic off;"
+      echo "}"
+      ;;
+    tls)
+      echo "ssl_certificate     $CERT_DIR/fullchain.pem;"
+      echo "ssl_certificate_key $CERT_DIR/privkey.pem;"
+      echo "ssl_protocols TLSv1.2 TLSv1.3;"
+      echo "ssl_session_cache shared:waf_tls:10m;"
+      echo "ssl_session_timeout 1d;"
+      ;;
+  esac
+}
+
 render_sites() {
-  local gateway_port mailpit_port domain
+  local phase=$1 listen=80 gateway_port mailpit_port domain
+  [[ $phase == tls ]] && listen="443 ssl"
   gateway_port="$(env_value "$PLATFORM_ENV" GATEWAY_PORT 8080)"
   mailpit_port="$(env_value "$PLATFORM_ENV" MAILPIT_UI_PORT 8025)"
   [[ $gateway_port =~ ^[0-9]+$ && $mailpit_port =~ ^[0-9]+$ ]] || die "GATEWAY_PORT/MAILPIT_UI_PORT phải là số"
   sed -e "s#@@WAF_DOMAIN@@#$WAF_DOMAIN#g" -e "s#@@MAIL_DOMAIN@@#$MAIL_DOMAIN#g" \
       -e "s#@@GATEWAY_PORT@@#$gateway_port#g" -e "s#@@MAILPIT_PORT@@#$mailpit_port#g" \
-      -e "s#@@MAIL_HTPASSWD@@#$MAIL_HTPASSWD#g" \
+      -e "s#@@MAIL_HTPASSWD@@#$MAIL_HTPASSWD#g" -e "s#@@LISTEN@@#$listen#g" \
+      -e "s#@@SERVER_SNIPPET@@#$SERVER_SNIPPET#g" \
       "$SERVER_DIR/nginx/waf-platform.conf.template"
   for domain in $DEMO_DOMAINS; do
     sed -e "s#@@DOMAIN@@#$domain#g" -e "s#@@SITE_LOG_DIR@@#$SITE_LOG_DIR#g" \
-        -e "s#@@SITE_WEB_ROOT@@#$SITE_WEB_ROOT#g" "$SERVER_DIR/nginx/waf-site.conf.template"
+        -e "s#@@SITE_WEB_ROOT@@#$SITE_WEB_ROOT#g" -e "s#@@LISTEN@@#$listen#g" \
+        -e "s#@@SERVER_SNIPPET@@#$SERVER_SNIPPET#g" "$SERVER_DIR/nginx/waf-site.conf.template"
   done
+  if [[ $phase == tls ]]; then
+    sed -e "s#@@ALL_DOMAINS@@#$(all_domains)#g" -e "s#@@ACME_ROOT@@#$ACME_ROOT#g" \
+        "$SERVER_DIR/nginx/waf-https-redirect.conf.template"
+  fi
 }
 
+# Xem trước: với direct-https in cấu hình cuối cùng (đã có chứng chỉ).
 print_nginx() {
+  local phase=http
+  [[ $ACCESS_MODE == direct-https ]] && phase=tls
   echo "# ---- /etc/nginx/conf.d/waf-logformat.conf"
   cat "$SERVER_DIR/nginx/waf-logformat.conf"
   echo "# ---- /etc/nginx/conf.d/waf-cloudflare-realip.conf"
   cloudflare_realip
+  echo "# ---- $SERVER_SNIPPET"
+  server_snippet "$phase"
   echo "# ---- $NGINX_SITE"
-  render_sites
+  render_sites "$phase"
+}
+
+# Ghi cấu hình site theo giai đoạn rồi nạp lại Nginx (dừng nếu cấu hình lỗi).
+apply_sites() {
+  server_snippet "$1" | $SUDO tee "$SERVER_SNIPPET" > /dev/null
+  render_sites "$1" | $SUDO tee "$NGINX_SITE" > /dev/null
+  $SUDO ln -sfn "$NGINX_SITE" /etc/nginx/sites-enabled/waf.conf
+  $SUDO nginx -t
+  $SUDO systemctl enable --now nginx
+  $SUDO systemctl reload nginx
 }
 
 install_demo_sites() {
@@ -213,10 +285,9 @@ install_demo_sites() {
 configure_nginx() {
   step "Cấu hình Nginx của máy chủ"
   $SUDO install -d -m 0750 -o root -g adm "$SITE_LOG_DIR"
+  $SUDO install -d -m 0755 "$ACME_ROOT" /etc/nginx/snippets
   $SUDO install -m 0644 "$SERVER_DIR/nginx/waf-logformat.conf" /etc/nginx/conf.d/waf-logformat.conf
   cloudflare_realip | $SUDO tee /etc/nginx/conf.d/waf-cloudflare-realip.conf > /dev/null
-  render_sites | $SUDO tee "$NGINX_SITE" > /dev/null
-  $SUDO ln -sfn "$NGINX_SITE" /etc/nginx/sites-enabled/waf.conf
 
   printf '%s:%s\n' "$MAIL_UI_USER" "$(openssl passwd -6 "$MAIL_UI_PASSWORD")" | $SUDO tee "$MAIL_HTPASSWD" > /dev/null
   $SUDO chown root:www-data "$MAIL_HTPASSWD"
@@ -226,9 +297,28 @@ configure_nginx() {
   sed "s#@@SITE_LOG_DIR@@#$SITE_LOG_DIR#g" "$SERVER_DIR/logrotate/waf-sites.template" \
     | $SUDO tee /etc/logrotate.d/waf-sites > /dev/null
 
-  $SUDO nginx -t
-  $SUDO systemctl enable --now nginx
-  $SUDO systemctl reload nginx
+  apply_sites "$(nginx_phase)"
+}
+
+# ACCESS_MODE=direct-https: lấy (hoặc cập nhật khi đổi domain) chứng chỉ Let's Encrypt bằng webroot rồi bật HTTPS.
+# certbot.timer tự gia hạn; deploy hook nạp lại Nginx sau mỗi lần gia hạn.
+enable_tls() {
+  [[ $ACCESS_MODE == direct-https ]] || return 0
+  step "Chứng chỉ HTTPS (Let's Encrypt) cho: $(all_domains)"
+  local domain args=(certonly --webroot -w "$ACME_ROOT" --cert-name "$CERT_NAME" --non-interactive --agree-tos
+                     --keep-until-expiring --expand --deploy-hook "systemctl reload nginx")
+  for domain in $(all_domains); do
+    args+=(-d "$domain")
+  done
+  if [[ -n ${LETSENCRYPT_EMAIL:-} ]]; then
+    args+=(-m "$LETSENCRYPT_EMAIL")
+  else
+    args+=(--register-unsafely-without-email)
+  fi
+  [[ ${LETSENCRYPT_STAGING:-false} == true ]] && args+=(--test-cert)
+  $SUDO certbot "${args[@]}" \
+    || die "không lấy được chứng chỉ. Kiểm tra bản ghi A của mọi domain trỏ thẳng về IP máy chủ (DNS ở Cloudflare thì để DNS only) và cổng 80 mở từ Internet, rồi chạy lại make server-up."
+  apply_sites tls
 }
 
 gateway_url() { printf 'http://127.0.0.1:%s' "$(env_value "$PLATFORM_ENV" GATEWAY_PORT 8080)"; }
@@ -250,10 +340,18 @@ ensure_scope() {
   done
 }
 
+# check <mô tả> <mã mong đợi> <domain> <path> [tham số curl...]: gọi Nginx của máy chủ tại 127.0.0.1
+# bằng đúng scheme và cổng của chế độ đang dùng (giữ tên miền để kiểm tra cả chứng chỉ).
 check() {
-  local label=$1 expected=$2 code
-  shift 2
-  code="$(curl -s -o /dev/null -w '%{http_code}' "$@")" || true
+  local label=$1 expected=$2 domain=$3 path=$4 code scheme=http port=80 insecure=()
+  shift 4
+  if [[ $(nginx_phase) == tls ]]; then
+    scheme=https
+    port=443
+    [[ ${LETSENCRYPT_STAGING:-false} == true ]] && insecure=(-k)
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' "${insecure[@]}" --resolve "$domain:$port:127.0.0.1" \
+    "$@" "$scheme://$domain$path")" || true
   if [[ $code == "$expected" ]]; then
     echo "  OK    $label (HTTP $code)"
   else
@@ -265,10 +363,19 @@ verify() {
   step "Kiểm tra nhanh qua Nginx của máy chủ"
   local first
   read -r first _ <<< "$DEMO_DOMAINS"
-  check "site demo $first" 200 -H "Host: $first" http://127.0.0.1/
-  check "dashboard $WAF_DOMAIN" 200 -H "Host: $WAF_DOMAIN" http://127.0.0.1/healthz
-  check "Mailpit $MAIL_DOMAIN yêu cầu đăng nhập" 401 -H "Host: $MAIL_DOMAIN" http://127.0.0.1/
-  check "Mailpit $MAIL_DOMAIN với tài khoản" 200 -u "$MAIL_UI_USER:$MAIL_UI_PASSWORD" -H "Host: $MAIL_DOMAIN" http://127.0.0.1/
+  check "site demo $first" 200 "$first" /
+  check "dashboard $WAF_DOMAIN" 200 "$WAF_DOMAIN" /healthz
+  check "Mailpit $MAIL_DOMAIN yêu cầu đăng nhập" 401 "$MAIL_DOMAIN" /
+  check "Mailpit $MAIL_DOMAIN với tài khoản" 200 "$MAIL_DOMAIN" / -u "$MAIL_UI_USER:$MAIL_UI_PASSWORD"
+  if [[ $(nginx_phase) == tls ]]; then
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' --resolve "$first:80:127.0.0.1" "http://$first/")" || true
+    if [[ $code == 301 ]]; then
+      echo "  OK    HTTP chuyển sang HTTPS (HTTP $code)"
+    else
+      echo "  LỖI   HTTP không chuyển sang HTTPS: HTTP $code"
+    fi
+  fi
   if $SUDO test -s "$SITE_LOG_DIR/$first.access.log"; then
     echo "  OK    log của $first được ghi vào $SITE_LOG_DIR (C1 đọc thư mục này)"
   else
@@ -277,15 +384,20 @@ verify() {
 }
 
 summary() {
-  local scheme=${PUBLIC_SCHEME:-https} domain
-  step "Xong"
-  echo "Dashboard : $scheme://$WAF_DOMAIN   (đăng nhập: $DASHBOARD_USER / $DASHBOARD_PASSWORD)"
-  echo "Mailpit   : $scheme://$MAIL_DOMAIN  (đăng nhập: $MAIL_UI_USER / $MAIL_UI_PASSWORD)"
+  local domain
+  step "Xong (ACCESS_MODE=$ACCESS_MODE)"
+  echo "Dashboard : $PUBLIC_SCHEME://$WAF_DOMAIN   (đăng nhập: $DASHBOARD_USER / $DASHBOARD_PASSWORD)"
+  echo "Mailpit   : $PUBLIC_SCHEME://$MAIL_DOMAIN  (đăng nhập: $MAIL_UI_USER / $MAIL_UI_PASSWORD)"
   for domain in $DEMO_DOMAINS; do
-    echo "Site demo : $scheme://$domain"
+    echo "Site demo : $PUBLIC_SCHEME://$domain"
   done
   echo "Observability: ${OBSERVABILITY:-false}. Mật khẩu lưu trong deploy/server/server.env (không commit)."
-  echo "DNS Cloudflare: bản ghi A (Proxied) cho các domain trên trỏ về IP máy chủ, SSL/TLS = Flexible."
+  case $ACCESS_MODE in
+    cloudflare) echo "DNS: bản ghi A (Proxied qua Cloudflare) trỏ về IP máy chủ; SSL/TLS = Flexible; mở cổng 80." ;;
+    direct-https) echo "DNS: bản ghi A trỏ thẳng về IP máy chủ; mở cổng 80 và 443; chứng chỉ tự gia hạn (certbot.timer)." ;;
+    direct-http) echo "DNS: bản ghi A trỏ thẳng về IP máy chủ; mở cổng 80. Không mã hoá: chỉ nên dùng thử." ;;
+  esac
+  echo "Kiểm thử end-to-end (sau khi DNS đã trỏ về máy chủ): make e2e-server"
   echo "Chi tiết: docs/server-deployment.md"
 }
 
@@ -299,8 +411,10 @@ main() {
   ensure_server_env
   ensure_docker_access "$@"
   prepare_stack_env
-  # Nginx trước: thư mục log phải có đúng quyền trước khi container C1 bind-mount nó.
+  # Nginx trước: thư mục log phải có đúng quyền trước khi container C1 bind-mount nó. Chứng chỉ HTTPS
+  # cũng được lấy trước khi build image để lỗi DNS hoặc cổng được báo sớm.
   configure_nginx
+  enable_tls
   start_containers
   ensure_scope
   verify

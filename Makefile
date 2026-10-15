@@ -10,7 +10,7 @@ REDOCLY_IMAGE := redocly/cli:1.34.5
 NGINX_LOG_DIR := /var/log/waf/nginx
 
 .DEFAULT_GOAL := help
-.PHONY: help init config up down restart ps logs clean smoke e2e test test-python test-java net build deploy-init deploy-env deploy-up deploy-down deploy-ps server-up server-down obs-up obs-down demo demo-apache test-alert build-base \
+.PHONY: help init config up down restart ps logs clean smoke e2e test test-python test-java net build deploy-init deploy-env deploy-up deploy-down deploy-ps server-up server-down e2e-server obs-up obs-down demo demo-apache test-alert build-base \
         tail-logs rotate-logs mock-reload bus-topology bus-purge bus-peek geoip lint-contracts experiment loadtest
 
 help: ## Liệt kê các lệnh
@@ -94,6 +94,9 @@ deploy-ps: deploy-env ## Trạng thái cả 3 stack
 
 server-up: ## Server thật (Ubuntu): cấu hình Nginx của máy chủ + dựng toàn bộ Docker (ENV=production) bằng một lệnh
 	@./scripts/server-up.sh
+
+e2e-server: ## Kịch bản kiểm thử end-to-end trên server thật (ARGS="--via-localhost --with-scope --report FILE")
+	@./scripts/e2e-server.sh $(ARGS)
 
 server-down: ## Server thật: dừng mọi container (giữ dữ liệu và cấu hình Nginx)
 	-@$(MAKE) --no-print-directory obs-down
