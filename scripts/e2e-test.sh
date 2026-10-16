@@ -56,8 +56,25 @@ TOKEN="$(token)"
 [[ -n "$TOKEN" ]] || { echo "Không lấy được token từ $GATEWAY/api/auth/token" >&2; exit 2; }
 summary() { curl -s --max-time 5 -H "Authorization: Bearer $TOKEN" "$GATEWAY/api/dashboard/summary"; }
 
+# Số bản ghi P5 có cho một domain: traffic từ log.enriched (bộ nhớ) + tấn công đã lưu DB.
+# In ra rỗng nếu không đọc được, để phép so sánh trước/sau không âm thầm coi lỗi là 0.
+domain_records() {
+  local traffic attacks
+  traffic="$(summary | jq -e --arg d "$1" '[.traffic[] | select(.domain == $d) | .count] | add // 0')" || return
+  attacks="$(curl -s --max-time 5 -H "Authorization: Bearer $TOKEN" \
+    "$GATEWAY/api/dashboard/attacks?domain=$1&limit=1000" | jq -e '
+      if .persisted then .attacks | length else error("P5 chưa lưu DB") end')" || return
+  echo $((traffic + attacks))
+}
+OUT_OF_SCOPE="internal.local"
+SCOPE_BEFORE="$(domain_records "$OUT_OF_SCOPE")"
+
 section "1. Gửi traffic thật (bình thường + tấn công) tới web mục tiêu"
-make demo >/dev/null 2>&1 && pass "đã gửi request demo tới shop.local" || fail "gửi request demo"
+if demo_out="$(make demo 2>&1)"; then
+  pass "đã gửi request demo tới shop.local"
+else
+  fail "gửi request demo" "$(tail -n 1 <<<"$demo_out")"
+fi
 
 section "2. Pipeline xử lý (theo dashboard realtime của P5)"
 wait_for "P5 ghi nhận tấn công (top_attacks)" \
@@ -74,15 +91,18 @@ wait_for "P5 có lịch sử cảnh báo" \
   "summary | jq '(.alerts | length) // 0'" 1
 
 section "4. Ràng buộc scope: log ngoài phạm vi không bị xử lý"
-curl -s -o /dev/null -H 'Host: internal.local' \
+curl -s -o /dev/null -H "Host: $OUT_OF_SCOPE" \
   "http://127.0.0.1:${WEB_NGINX_PORT:-8081}/api/x?q=1%27%20OR%201=1--${MARK}"
 sleep 6
 ndl=$(( $(dlq_count) - DLQ_BEFORE ))
 if (( ndl == 0 )); then pass "không có message lỗi mới trong dead-letter (waf.deadletter)"; else fail "dead-letter có thêm $ndl message"; fi
-if summary | jq -e '[.top_ips[].ip] | index("internal.local")' >/dev/null 2>&1; then
-  fail "internal.local bị xử lý (không được phép)"
+scope_after="$(domain_records "$OUT_OF_SCOPE")"
+if [[ ! "$SCOPE_BEFORE" =~ ^[0-9]+$ || ! "$scope_after" =~ ^[0-9]+$ ]]; then
+  fail "kiểm tra $OUT_OF_SCOPE" "không đọc được traffic/tấn công từ P5"
+elif (( scope_after > SCOPE_BEFORE )); then
+  fail "$OUT_OF_SCOPE (ngoài scope) bị xử lý" "P5 có thêm $((scope_after - SCOPE_BEFORE)) bản ghi traffic/tấn công"
 else
-  pass "internal.local (ngoài scope) không xuất hiện trong kết quả phát hiện"
+  pass "$OUT_OF_SCOPE (ngoài scope) không có traffic hay tấn công mới trong P5"
 fi
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"

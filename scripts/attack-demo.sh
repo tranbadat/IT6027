@@ -18,6 +18,7 @@ if [[ ! "$TARGET_URL" =~ $LOCAL_TARGET_RE ]]; then
   exit 1
 fi
 TARGET_URL="${TARGET_URL%/}"
+UNANSWERED=0  # số request không nhận được phản hồi HTTP (web mục tiêu tắt, timeout...)
 
 # send <nhãn> <path> [user-agent] [host]
 send() {
@@ -26,6 +27,7 @@ send() {
   status="$(curl -s -o /dev/null -w '%{http_code}' --path-as-is --max-time 5 \
     -H "Host: ${host}" -H "Cookie: sessionid=${SESSION_ID}" -A "$user_agent" \
     "${TARGET_URL}${path}")" || status="ERR"
+  [[ "$status" =~ ^[1-5][0-9][0-9]$ ]] || UNANSWERED=$((UNANSWERED + 1))
   printf '  %-18s %-4s %-14s %s\n' "$label" "$status" "$host" "$path"
 }
 
@@ -60,3 +62,8 @@ send scanner-ua "/api/products?id=1" "Nikto/2.5"
 
 echo "Ngoài scope (service phải bỏ qua):"
 send out-of-scope "/api/products?id=1%27%20OR%20%271%27%3D%271" "$BROWSER_UA" "internal.local"
+
+if (( UNANSWERED > 0 )); then
+  echo "Có ${UNANSWERED} request không nhận được phản hồi HTTP từ ${TARGET_URL} — web mục tiêu có đang chạy?" >&2
+  exit 1
+fi

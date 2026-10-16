@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: P5 Dashboard
-  version: 0.2.0
+  version: 0.3.0
   description: |
     API tổng hợp cho bảng điều khiển thời gian thực. P5 đọc các topic `log.enriched`, `attack.detected`,
     `anomaly.scored`, `alert.triggered`, `stage.completed` (consumer group `p5-dashboard`), giữ số liệu
@@ -11,7 +11,9 @@ info:
     - API dữ liệu: qua gateway `http://localhost:8080/api/dashboard/...` (cần JWT). Gateway chặn
       đường tắt `/dashboard/...` không qua `/api`.
     - Giao diện SPA (không thuộc API, không cần JWT; trang tự xin token): `http://localhost:8080/`;
-      `/rules` chuyển hướng 307 tới view quản lý rule `/#rules`.
+      `/rules` chuyển hướng 307 tới view quản lý rule `/#rules`; tài nguyên tĩnh (CSS, JS, icon) ở `/static/...`.
+    - Các API thống kê (`/dashboard/overview`, `/dashboard/stats/*`) và lịch sử (`/dashboard/attacks`) đọc
+      `detection.attacks`; cửa sổ thời gian là `hours` giờ gần nhất, kỳ trước là `hours` giờ liền trước đó.
   license:
     name: Internal
     identifier: LicenseRef-Internal
@@ -45,7 +47,7 @@ paths:
     get:
       tags: [dashboard]
       operationId: listAttacks
-      summary: Lịch sử tấn công đã lưu trong Postgres (mới nhất trước)
+      summary: Lịch sử tấn công đã lưu trong Postgres (mới nhất trước), có lọc và phân trang
       parameters:
         - name: limit
           in: query
@@ -55,18 +57,58 @@ paths:
             minimum: 1
             maximum: 1000
             default: 100
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+        - name: hours
+          in: query
+          required: false
+          description: Chỉ lấy tấn công trong `hours` giờ gần nhất. Bỏ trống thì không giới hạn thời gian.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 720
+        - name: q
+          in: query
+          required: false
+          description: Tìm chuỗi con (không phân biệt hoa thường) trong IP nguồn, URL, mã rule, domain. `%` và `_` là ký tự thường.
+          schema:
+            type: string
+            maxLength: 200
+          example: 10.0.0.2
         - name: domain
           in: query
           required: false
           schema:
             type: string
+            maxLength: 200
           example: shop.local
         - name: attack_type
           in: query
           required: false
           schema:
             type: string
+            maxLength: 200
           example: sql_injection
+        - name: severity
+          in: query
+          required: false
+          description: Khớp chính xác; giá trị dùng trong hệ thống là `critical`, `high`, `medium`, `low`.
+          schema:
+            type: string
+            maxLength: 200
+        - name: histogram
+          in: query
+          required: false
+          description: true (kèm `hours`) thì trả thêm `histogram` - số tấn công khớp bộ lọc theo từng khoảng thời gian.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: Danh sách tấn công. Khi DB không dùng được, `attacks` rỗng và `persisted` = false.
@@ -77,7 +119,92 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '422':
-          description: Tham số sai (ví dụ limit ngoài khoảng 1–1000).
+          description: Tham số sai (ví dụ limit ngoài khoảng 1–1000, q dài hơn 200 ký tự).
+  /dashboard/overview:
+    get:
+      tags: [dashboard]
+      operationId: getOverview
+      summary: Số liệu màn hình Tổng quan trong cửa sổ thời gian
+      description: |
+        KPI so với kỳ trước, xu hướng 24 khoảng, diễn biến theo mức độ (48 khoảng), phân loại, top domain,
+        top rule, mật độ 7 ngày × 24 giờ (theo `DASHBOARD_TZ`) và top IP nguồn. Không có DB hoặc truy vấn lỗi
+        thì chỉ trả `{window: {hours}, persisted: false}`.
+      parameters:
+        - $ref: '#/components/parameters/Hours'
+      responses:
+        '200':
+          description: Số liệu tổng quan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Overview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: hours ngoài khoảng 1–720.
+  /dashboard/stats/domains:
+    get:
+      tags: [dashboard]
+      operationId: domainStats
+      summary: Số tấn công theo domain trong cửa sổ thời gian
+      parameters:
+        - $ref: '#/components/parameters/Hours'
+      responses:
+        '200':
+          description: Mọi domain từng bị tấn công, nhiều tấn công nhất trước.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [domains, persisted]
+                properties:
+                  domains:
+                    type: array
+                    items:
+                      type: object
+                      required: [domain, count, trend]
+                      properties:
+                        domain: {type: string}
+                        count: {type: integer, description: Số tấn công trong cửa sổ}
+                        trend: {$ref: '#/components/schemas/Trend'}
+                        last_attack_at:
+                          type: [string, 'null']
+                          description: Lần bị tấn công gần nhất (mọi thời điểm)
+                  persisted: {type: boolean}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: hours ngoài khoảng 1–720.
+  /dashboard/stats/rules:
+    get:
+      tags: [dashboard]
+      operationId: ruleStats
+      summary: Số lần khớp theo rule trong cửa sổ thời gian
+      parameters:
+        - $ref: '#/components/parameters/Hours'
+      responses:
+        '200':
+          description: Các rule có khớp trong cửa sổ, nhiều nhất trước.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rules, persisted]
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                      required: [rule_id, count, trend]
+                      properties:
+                        rule_id: {type: string}
+                        count: {type: integer}
+                        trend: {$ref: '#/components/schemas/Trend'}
+                  persisted: {type: boolean}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: hours ngoài khoảng 1–720.
   /dashboard/stream:
     get:
       tags: [dashboard]
@@ -96,7 +223,7 @@ paths:
                 type: string
               example: |
                 event: attack.detected
-                data: {"event":"attack.detected","domain":"shop.local","timestamp":"2026-10-14T03:53:33Z","data":{"attack_type":"sql_injection","rule_id":"SQLI_UNION_SELECT","severity":"critical","src_ip":"172.21.0.1","url":"/api/products?id=1%20UNION%20SELECT%20pw"}}
+                data: {"event":"attack.detected","event_id":"9bd80d0e-23c7-47e7-b341-05899669ba4b","request_id":"5f0c2a9e8d1b4c7a","domain":"shop.local","timestamp":"2026-10-14T03:53:33Z","data":{"attack_type":"sql_injection","rule_id":"SQLI_UNION_SELECT","severity":"critical","src_ip":"172.21.0.1","url":"/api/products?id=1%20UNION%20SELECT%20pw"}}
         '401':
           $ref: '#/components/responses/Unauthorized'
   /dashboard/links:
@@ -172,6 +299,11 @@ components:
         event:
           type: string
           enum: [log.enriched, attack.detected, anomaly.scored, alert.triggered]
+        event_id:
+          type: [string, 'null']
+        request_id:
+          type: [string, 'null']
+          description: Mã request gốc (null với event không gắn request, ví dụ alert DDoS).
         domain:
           type: string
         timestamp:
@@ -263,17 +395,141 @@ components:
         evidence: {type: [string, 'null']}
         request_id: {type: [string, 'null']}
         session_id: {type: [string, 'null']}
+        status: {type: [integer, 'null'], description: Mã HTTP của request bị phát hiện}
+        user_agent: {type: [string, 'null']}
+        score: {type: [integer, 'null'], description: Điểm (weight) của rule khớp}
     AttacksResponse:
       type: object
-      required: [attacks, persisted]
+      required: [attacks, total, persisted]
       properties:
         attacks:
           type: array
           items:
             $ref: '#/components/schemas/Attack'
+        total:
+          type: integer
+          description: Số tấn công khớp bộ lọc (dùng để phân trang).
+        unique_ips:
+          type: integer
+          description: Số IP nguồn khác nhau trong các tấn công khớp bộ lọc.
+        histogram:
+          type: object
+          description: Chỉ có khi `histogram=true` và có `hours`.
+          required: [start, bucket_minutes, buckets]
+          properties:
+            start: {type: string, description: Đầu cửa sổ (ISO 8601)}
+            bucket_minutes: {type: number}
+            buckets:
+              type: array
+              items: {type: integer}
         count:
           type: integer
-          description: Tổng số tấn công trong DB, không áp bộ lọc domain/attack_type (chỉ có khi persisted = true).
+          description: Tổng số tấn công trong DB, không áp bộ lọc (chỉ có khi persisted = true).
+        persisted:
+          type: boolean
+    Trend:
+      type: array
+      description: 24 khoảng đều nhau từ đầu tới cuối cửa sổ, cũ trước.
+      items: {type: integer}
+    Kpi:
+      type: object
+      properties:
+        value: {type: [integer, 'null']}
+        previous: {type: [integer, 'null'], description: Giá trị của kỳ trước}
+        change_pct: {type: [number, 'null'], description: '% thay đổi so với kỳ trước; null khi kỳ trước bằng 0'}
+        trend: {$ref: '#/components/schemas/Trend'}
+    Overview:
+      type: object
+      required: [window, persisted]
+      properties:
+        window:
+          type: object
+          properties:
+            hours: {type: integer}
+            start: {type: string}
+            end: {type: string}
+            trend_minutes: {type: number, description: Độ dài một khoảng của `trend`}
+            timeline_minutes: {type: number, description: Độ dài một khoảng của `timeline`}
+        kpi:
+          type: object
+          properties:
+            attacks: {$ref: '#/components/schemas/Kpi'}
+            unique_ips: {$ref: '#/components/schemas/Kpi'}
+            domains_attacked:
+              type: object
+              properties:
+                trend: {$ref: '#/components/schemas/Trend'}
+            rules_matched:
+              type: object
+              properties:
+                trend: {$ref: '#/components/schemas/Trend'}
+            alerts:
+              allOf:
+                - $ref: '#/components/schemas/Kpi'
+              description: Từ `alerting.alerts` của P4; bảng chưa tồn tại thì `value` = null.
+        timeline:
+          type: array
+          description: 48 khoảng, mỗi khoảng là số tấn công theo mức độ.
+          items:
+            type: object
+            properties:
+              critical: {type: integer}
+              high: {type: integer}
+              medium: {type: integer}
+              low: {type: integer}
+        types:
+          type: array
+          items:
+            type: object
+            required: [attack_type, count]
+            properties:
+              attack_type: {type: string}
+              count: {type: integer}
+        top_domains:
+          type: array
+          maxItems: 6
+          items:
+            type: object
+            required: [domain, count]
+            properties:
+              domain: {type: string}
+              count: {type: integer}
+        top_rules:
+          type: array
+          maxItems: 6
+          items:
+            type: object
+            required: [rule_id, count]
+            properties:
+              rule_id: {type: string}
+              rule_name: {type: [string, 'null']}
+              attack_type: {type: [string, 'null']}
+              count: {type: integer}
+        heatmap:
+          type: array
+          description: 7 ngày gần nhất (cũ trước, tính cả hôm nay) theo múi giờ `DASHBOARD_TZ`.
+          items:
+            type: object
+            required: [date, weekday, hours]
+            properties:
+              date: {type: string, format: date}
+              weekday: {type: integer, minimum: 0, maximum: 6, description: 0 = thứ Hai}
+              hours:
+                type: array
+                minItems: 24
+                maxItems: 24
+                items: {type: integer}
+        top_ips:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            required: [ip, count]
+            properties:
+              ip: {type: string}
+              count: {type: integer}
+              main_type: {type: [string, 'null'], description: Loại tấn công nhiều nhất của IP}
+              trend: {$ref: '#/components/schemas/Trend'}
         persisted:
           type: boolean
     GatewayError:
@@ -284,6 +540,17 @@ components:
           type: string
         message:
           type: string
+  parameters:
+    Hours:
+      name: hours
+      in: query
+      required: false
+      description: Độ dài cửa sổ thời gian (giờ gần nhất).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 720
+        default: 24
   responses:
     Unauthorized:
       description: Thiếu hoặc sai token (khi gọi qua gateway).

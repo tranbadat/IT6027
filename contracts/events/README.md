@@ -34,7 +34,7 @@ So với kế hoạch (`event`, `request_id`/`session_id`, `timestamp`, `data`),
 | `log.raw.ingested` | c1-ingestion | c2-parser, p3-orchestrator, metrics-exporter | dòng log gốc, nguồn log, thời điểm thu thập | Người 1 |
 | `log.normalized` | c2-parser | c3-enrichment, p3-orchestrator, metrics-exporter | `src_ip`, `method`, `path`, `query_string`, `status`, `user_agent`, `referer`, `host`, `request_ts`, … | Người 1 |
 | `log.enriched` | c3-enrichment | detector, repartitioner, p3-orchestrator, p5-dashboard, metrics-exporter | normalized + `geo`, phiên, `req_count_1m` | Người 1 |
-| `attack.detected` | detector | p3-orchestrator, p5-dashboard, metrics-exporter | `attack_type`, `severity`, `rule_id`, `rule_name`, `src_ip`, `method`, `url`, `host`, `field`, `matched_value`, `evidence` | Người 2 |
+| `attack.detected` | detector | p3-orchestrator, p5-dashboard, metrics-exporter | `attack_type`, `severity`, `rule_id`, `rule_name`, `src_ip`, `method`, `url`, `host`, `status`, `user_agent`, `field`, `matched_value`, `evidence`, `score` (weight của rule) | Người 2 |
 | `anomaly.scored` | detector | p3-orchestrator, p4-alerting, p5-dashboard, metrics-exporter | `score`, `threshold`, `severity`, `src_ip`, `url`, `host`, `attack_types`, `signals`, `reasons` | Người 2 |
 | `alert.triggered` | detector, ddos-detector | p3-orchestrator, p4-alerting, p5-dashboard, metrics-exporter | `score`, `threshold`, `severity`, `src_ip`, `url`, `host`, `attack_types`, `rule_ids`, `signals`, `reason` | Người 2 |
 | `stage.completed` | p3-orchestrator | p5-dashboard, metrics-exporter | `pipeline`, `stage`, `processed`, `window_seconds` | Người 3 |

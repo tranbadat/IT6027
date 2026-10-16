@@ -52,7 +52,7 @@ curl -s -X POST localhost:8080/api/rules/validate -H "Authorization: Bearer $TOK
   -d '{"id":"XSS_IFRAME","group":"xss","description":"iframe injection","enabled":true,"targets":["query"],"pattern":"(?i)<\\s*iframe","score":75,"normalizers":["url_decode","html_decode"]}'
 ```
 
-`POST /api/rules/` thêm, `PUT /api/rules/{id}` sửa, `DELETE /api/rules/{id}` xoá (404 nếu không tồn tại; không xoá được rule cuối cùng). `rule-api` không publish cổng ra host; chỉ đi qua gateway. Khi khởi động, detector đọc hết snapshot trên `rules.changed` (tối đa 30 giây) rồi mới xử lý log.
+`POST /api/rules/` thêm, `PUT /api/rules/{id}` sửa, `DELETE /api/rules/{id}` xoá (404 nếu không tồn tại; không xoá được rule cuối cùng). `POST /api/rules/test` chạy thử một rule chưa lưu trên request mẫu `{"rule": {...}, "sample": "/path?query"}` (tối đa 8192 ký tự; chỉ trường `url` và `query`, theo `targets` và `normalizers` của rule) và trả `{matched, field, value, start, end, elapsed_ms}`; dashboard dùng cho nút "Chạy kiểm thử" trong ngăn kéo rule. `rule-api` không publish cổng ra host; chỉ đi qua gateway. Khi khởi động, detector đọc hết snapshot trên `rules.changed` (tối đa 30 giây) rồi mới xử lý log.
 
 Lưu ý bảo mật: detector tin mọi snapshot trên `rules.changed`. Kafka dùng PLAINTEXT nên chỉ để broker trong mạng tin cậy; khi mở ra ngoài cần SASL + ACL để chỉ `rule-api` được ghi topic này.
 

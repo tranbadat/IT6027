@@ -4,6 +4,7 @@ import com.example.waf.detector.model.Event;
 import com.example.waf.detector.model.RuleDefinition;
 import com.example.waf.detector.model.RuleDocument;
 import com.example.waf.detector.model.RuleMatch;
+import com.example.waf.detector.model.RuleSampleMatch;
 import com.example.waf.detector.service.RuleEngineService;
 import com.example.waf.detector.service.RuleLoaderService;
 import com.example.waf.detector.service.RuleValidationService;
@@ -16,6 +17,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 public final class RuleEngineServiceImpl implements RuleEngineService {
     private record CompiledRule(RuleDefinition definition, Pattern pattern) {}
@@ -54,12 +56,7 @@ public final class RuleEngineServiceImpl implements RuleEngineService {
 
     @Override
     public List<RuleMatch> match(Event event) {
-        List<Field> fields = new ArrayList<>();
-        fields.add(new Field("url", event.path(), false));
-        fields.add(new Field("query", event.query(), true));
-        fields.add(new Field("body", event.body(), true));
-        event.headers().forEach((name, value) -> fields.add(new Field("headers." + name, value, false)));
-
+        List<Field> fields = fieldsOf(event);
         List<RuleMatch> matches = new ArrayList<>();
         for (CompiledRule compiled : rules) {
             RuleDefinition rule = compiled.definition();
@@ -75,6 +72,36 @@ public final class RuleEngineServiceImpl implements RuleEngineService {
             }
         }
         return List.copyOf(matches);
+    }
+
+    /**
+     * Thử một rule (đã được kiểm tra hợp lệ) trên request mẫu dạng "path?query", cùng cách chọn trường và
+     * chuẩn hoá như khi phát hiện thật. Trả về lần khớp đầu tiên, hoặc rỗng.
+     */
+    public static Optional<RuleSampleMatch> test(RuleDefinition rule, String sample) {
+        String target = sample == null ? "" : sample.strip();
+        int question = target.indexOf('?');
+        String path = question < 0 ? target : target.substring(0, question);
+        String query = question < 0 ? "" : target.substring(question + 1);
+        Event event = new Event("sample", "", "", "", "GET", path, query, "", "", 200);
+        Pattern pattern = Pattern.compile(rule.pattern(), Pattern.CASE_INSENSITIVE);
+        for (Field field : fieldsOf(event)) {
+            if (!targets(rule.targets(), field.name())) continue;
+            String value = normalize(field.value(), field.plusAsSpace(), rule.normalizers());
+            Matcher matcher = pattern.matcher(value);
+            if (matcher.find())
+                return Optional.of(new RuleSampleMatch(field.name(), matcher.group(), matcher.start(), matcher.end()));
+        }
+        return Optional.empty();
+    }
+
+    private static List<Field> fieldsOf(Event event) {
+        List<Field> fields = new ArrayList<>();
+        fields.add(new Field("url", event.path(), false));
+        fields.add(new Field("query", event.query(), true));
+        fields.add(new Field("body", event.body(), true));
+        event.headers().forEach((name, value) -> fields.add(new Field("headers." + name, value, false)));
+        return fields;
     }
 
     private static String normalize(String value, boolean plusAsSpace, List<String> normalizers) {

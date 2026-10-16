@@ -101,6 +101,52 @@ paths:
           $ref: '#/components/responses/InvalidRule'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /rules/test:
+    post:
+      tags: [rules]
+      operationId: testRule
+      summary: Thử một rule (chưa lưu) trên request mẫu
+      description: |
+        `sample` có dạng `path?query` (ví dụ `/api/users?id=1 OR 1=1 --`). Rule được kiểm tra hợp lệ như
+        `/rules/validate`, rồi chạy trên các trường `url` và `query` của request mẫu, theo `targets` và
+        `normalizers` của rule. Trả vị trí khớp đầu tiên (trên giá trị đã chuẩn hoá).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rule]
+              properties:
+                rule:
+                  $ref: '#/components/schemas/RuleDefinition'
+                sample:
+                  type: string
+                  maxLength: 8192
+            example:
+              rule: {id: SQLI_TAUTOLOGY, group: sql_injection, description: "OR 1=1", enabled: true,
+                     targets: [query], pattern: "(?i)or\\s+1\\s*=\\s*1", score: 80, normalizers: [url_decode]}
+              sample: /api/users?id=1%20OR%201=1%20--
+      responses:
+        '200':
+          description: Kết quả thử. Không khớp thì chỉ có `matched` = false và `elapsed_ms`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [matched, elapsed_ms]
+                properties:
+                  matched: {type: boolean}
+                  field: {type: string, description: Trường khớp (url hoặc query)}
+                  value: {type: string, description: Đoạn khớp}
+                  start: {type: integer}
+                  end: {type: integer}
+                  elapsed_ms: {type: number}
+              example: {matched: true, field: query, value: OR 1=1, start: 5, end: 11, elapsed_ms: 0.08}
+        '400':
+          $ref: '#/components/responses/InvalidRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /rules/{id}:
     parameters:
       - name: id

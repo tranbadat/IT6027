@@ -3,9 +3,11 @@ package com.example.waf.detector.api;
 import com.example.waf.detector.kafka.KafkaRuleChangePublisher;
 import com.example.waf.detector.model.RuleDefinition;
 import com.example.waf.detector.model.RuleDocument;
+import com.example.waf.detector.model.RuleSampleMatch;
 import com.example.waf.detector.service.RuleChangePublisher;
 import com.example.waf.detector.service.RuleStoreService;
 import com.example.waf.detector.service.RuleValidationService;
+import com.example.waf.detector.service.impl.RuleEngineServiceImpl;
 import com.example.waf.detector.service.impl.RuleStoreServiceImpl;
 import com.example.waf.detector.service.impl.RuleValidationServiceImpl;
 import com.example.waf.detector.util.EnvironmentUtils;
@@ -18,7 +20,9 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Executors;
 
 public final class RuleApiServer {
@@ -29,6 +33,10 @@ public final class RuleApiServer {
     private final RuleChangePublisher publisher;
     private final HttpServer server;
     private final Object mutationLock = new Object();
+    private static final int MAX_SAMPLE_LENGTH = 8_192;
+
+    /** Body của POST /rules/test: rule cần thử và request mẫu dạng "path?query". */
+    private record RuleTestRequest(RuleDefinition rule, String sample) {}
 
     public RuleApiServer() throws IOException {
         store = new RuleStoreServiceImpl(Path.of(EnvironmentUtils.value("RULE_STORE_PATH", "data/rules.json")));
@@ -67,6 +75,7 @@ public final class RuleApiServer {
                 RuleDefinition rule = readRule(exchange); validator.validate(rule);
                 json(exchange, 200, Map.of("valid", true)); return;
             }
+            if ("POST".equals(method) && "test".equals(id)) { json(exchange, 200, testRule(exchange)); return; }
             if ("POST".equals(method) && id == null) {
                 RuleDefinition rule = readRule(exchange);
                 changed(exchange, mutate(() -> {
@@ -112,6 +121,30 @@ public final class RuleApiServer {
             }
             return document;
         }
+    }
+
+    /** Thử rule trên request mẫu, không lưu gì (nút "Chạy kiểm thử" của dashboard). */
+    private Map<String, Object> testRule(HttpExchange exchange) throws IOException {
+        byte[] body = exchange.getRequestBody().readNBytes(1_000_001);
+        if (body.length > 1_000_000) throw new IllegalArgumentException("Body exceeds 1 MB");
+        RuleTestRequest request = mapper.readValue(body, RuleTestRequest.class);
+        if (request.rule() == null) throw new IllegalArgumentException("rule is required");
+        String sample = request.sample() == null ? "" : request.sample();
+        if (sample.length() > MAX_SAMPLE_LENGTH) throw new IllegalArgumentException("sample exceeds 8192 characters");
+        validator.validate(request.rule());
+        long started = System.nanoTime();
+        Optional<RuleSampleMatch> match = RuleEngineServiceImpl.test(request.rule(), sample);
+        double elapsedMs = (System.nanoTime() - started) / 1_000_000.0;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("matched", match.isPresent());
+        match.ifPresent(found -> {
+            result.put("field", found.field());
+            result.put("value", found.value());
+            result.put("start", found.start());
+            result.put("end", found.end());
+        });
+        result.put("elapsed_ms", Math.round(elapsedMs * 100) / 100.0);
+        return result;
     }
 
     private RuleDefinition readRule(HttpExchange exchange) throws IOException {

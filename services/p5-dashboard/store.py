@@ -57,7 +57,7 @@ class AggregateStore:
             elif event == "stage.completed":
                 self._add_stage(env)
             if event in _REALTIME_EVENTS:
-                self._recent.append(_compact_event(env))
+                self._recent.append(compact_event(env))
 
     def _add_traffic(self, env: dict) -> None:
         domain = env.get("domain") or "unknown"
@@ -113,10 +113,12 @@ class AggregateStore:
         }
 
 
-def _compact_event(env: dict) -> dict:
-    """Bản gọn của event để đẩy realtime / hiển thị feed."""
+def compact_event(env: dict) -> dict:
+    """Bản gọn của event để đẩy realtime (SSE) / hiển thị feed; giữ mã event và mã request cho khung chi tiết."""
     return {
         "event": env.get("event"),
+        "event_id": env.get("event_id"),
+        "request_id": env.get("request_id"),
         "domain": env.get("domain"),
         "timestamp": env.get("timestamp"),
         "data": env.get("data") or {},

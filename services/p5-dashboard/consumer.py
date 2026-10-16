@@ -7,6 +7,8 @@ import threading
 from common import bus as bus_mod
 from common import logging as log
 
+import store as store_mod
+
 SOURCE = "p5-dashboard"
 TOPICS = ["log.enriched", "attack.detected", "anomaly.scored", "alert.triggered",
           "stage.completed"]
@@ -24,12 +26,7 @@ def build_handler(store, hub, repo=None):
             except Exception as exc:  # best-effort, không làm chết handler
                 log.warning("persist attack failed", error=str(exc), event_id=env.get("event_id"))
         if env.get("event") in _REALTIME_EVENTS:
-            hub.publish_threadsafe({
-                "event": env.get("event"),
-                "domain": env.get("domain"),
-                "timestamp": env.get("timestamp"),
-                "data": env.get("data") or {},
-            })
+            hub.publish_threadsafe(store_mod.compact_event(env))
 
     return handle
 

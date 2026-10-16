@@ -77,6 +77,22 @@ def test_recent_feed_only_realtime_events():
     assert "stage.completed" not in events  # stage không vào feed realtime
 
 
+def test_stream_item_keeps_event_and_request_ids():
+    import consumer as consumer_mod
+
+    class Hub:
+        items = []
+
+        def publish_threadsafe(self, item):
+            self.items.append(item)
+
+    hub = Hub()
+    consumer_mod.build_handler(store_mod.AggregateStore(), hub)(_attack("shop.local", "sqli", "1.2.3.4"), "k")
+    # Khung chi tiết realtime hiển thị mã yêu cầu: SSE phải mang event_id và request_id.
+    assert hub.items[0]["event_id"] == "e" and hub.items[0]["request_id"] == "r", hub.items
+    assert hub.items[0]["data"]["src_ip"] == "1.2.3.4"
+
+
 # ---------- Liên kết ở trang Cài đặt (DASHBOARD_LINKS) ----------
 
 def test_parse_links_reads_name_and_url_pairs():
@@ -107,6 +123,94 @@ def test_links_route_is_empty_without_configuration():
     from stream import StreamHub
     client = TestClient(app_mod.create_app(store_mod.AggregateStore(), StreamHub()))
     assert client.get("/dashboard/links").json() == {"links": []}
+
+
+# ---------- API thống kê cho giao diện mới (overview, lịch sử có lọc, theo domain/rule) ----------
+
+class _FakeRepo:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"attacks": [{"event_id": "e1", "src_ip": "1.2.3.4"}], "total": 1, "unique_ips": 1}
+
+    def count(self):
+        return 42
+
+
+class _FakeStats:
+    def __init__(self):
+        self.calls = []
+
+    def overview(self, hours):
+        self.calls.append(("overview", hours))
+        return {"kpi": {"attacks": {"value": 3}}, "persisted": True}
+
+    def domains(self, hours):
+        self.calls.append(("domains", hours))
+        return [{"domain": "shop.local", "count": 3, "trend": [0] * 24, "last_attack_at": None}]
+
+    def rules(self, hours):
+        self.calls.append(("rules", hours))
+        return [{"rule_id": "SQLI_UNION_SELECT", "count": 3, "trend": [0] * 24}]
+
+
+def _client(repo=None, stats=None):
+    from fastapi.testclient import TestClient
+    import app as app_mod
+    from stream import StreamHub
+    return TestClient(app_mod.create_app(store_mod.AggregateStore(), StreamHub(), repo=repo, stats=stats))
+
+
+def test_overview_route_uses_requested_window():
+    stats = _FakeStats()
+    body = _client(stats=stats).get("/dashboard/overview?hours=6").json()
+    assert body["kpi"]["attacks"]["value"] == 3 and stats.calls == [("overview", 6)], (body, stats.calls)
+
+
+def test_overview_without_database_is_not_persisted():
+    body = _client().get("/dashboard/overview").json()
+    assert body["persisted"] is False and body["window"]["hours"] == 24, body
+
+
+def test_overview_rejects_out_of_range_window():
+    assert _client(stats=_FakeStats()).get("/dashboard/overview?hours=100000").status_code == 422
+
+
+def test_attacks_route_passes_filters_and_paging_to_repo():
+    repo = _FakeRepo()
+    body = _client(repo=repo).get(
+        "/dashboard/attacks?limit=10&offset=20&hours=24&q=1.2.3&domain=shop.local"
+        "&attack_type=xss&severity=high&histogram=true").json()
+    assert body["total"] == 1 and body["count"] == 42 and body["persisted"] is True, body
+    assert repo.calls == [{"limit": 10, "offset": 20, "hours": 24, "q": "1.2.3", "domain": "shop.local",
+                           "attack_type": "xss", "severity": "high", "histogram": True}], repo.calls
+
+
+def test_attacks_route_rejects_oversized_search_text():
+    assert _client(repo=_FakeRepo()).get("/dashboard/attacks?q=" + "a" * 201).status_code == 422
+
+
+def test_domain_and_rule_stats_routes():
+    stats = _FakeStats()
+    client = _client(stats=stats)
+    assert client.get("/dashboard/stats/domains?hours=24").json()["domains"][0]["domain"] == "shop.local"
+    assert client.get("/dashboard/stats/rules").json()["rules"][0]["rule_id"] == "SQLI_UNION_SELECT"
+    assert stats.calls == [("domains", 24), ("rules", 24)], stats.calls
+
+
+def test_stats_routes_are_empty_without_database():
+    client = _client()
+    assert client.get("/dashboard/stats/domains").json() == {"domains": [], "persisted": False}
+    assert client.get("/dashboard/stats/rules").json() == {"rules": [], "persisted": False}
+
+
+def test_static_assets_are_served():
+    response = _client().get("/static/icons/search.svg")
+    assert response.status_code == 200 and "svg" in response.headers["content-type"], response.headers
+    # JS/CSS không có hash phiên bản: buộc trình duyệt hỏi lại (ETag -> 304) để không trộn bản cũ và mới.
+    assert response.headers["cache-control"] == "no-cache", response.headers
 
 
 if __name__ == "__main__":

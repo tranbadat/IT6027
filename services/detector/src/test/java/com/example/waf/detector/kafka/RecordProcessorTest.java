@@ -84,6 +84,10 @@ class RecordProcessorTest {
         assertEquals("10.0.0.1", d.get("src_ip"));
         assertEquals("/api/products?id=1%20UNION%20SELECT%20pw", d.get("url"));
         assertTrue(String.valueOf(d.get("matched_value")).toUpperCase().contains("UNION SELECT"), d.toString());
+        // Dashboard hiển thị mã HTTP, User-Agent và điểm của rule cho từng sự kiện.
+        assertEquals(200, d.get("status"));
+        assertEquals("Mozilla/5.0", d.get("user_agent"));
+        assertTrue((Integer) d.get("score") >= 1, d.toString());
 
         Map<String, Object> scored = data(json(out.stream()
                 .filter(o -> o.topic().equals("anomaly.scored")).findFirst().orElseThrow().value()));

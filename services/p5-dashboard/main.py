@@ -15,6 +15,7 @@ from common import logging as log
 import app as app_mod
 import consumer as consumer_mod
 import repo as repo_mod
+import stats_repo as stats_repo_mod
 import store as store_mod
 from stream import StreamHub
 
@@ -22,17 +23,19 @@ SOURCE = "p5-dashboard"
 
 
 def _init_repo():
-    """Mở kho lịch sử tấn công (Postgres) nếu có DATABASE_URL. Lỗi -> degrade in-memory."""
+    """Mở kho lịch sử tấn công (Postgres) nếu có DATABASE_URL, kèm truy vấn thống kê dùng chung pool.
+    Lỗi -> degrade in-memory (không lưu lịch sử, trang Tổng quan báo chưa có dữ liệu)."""
     dsn = config.env("DATABASE_URL", "")
     if not dsn:
-        return None
+        return None, None
     try:
-        repo = repo_mod.AttackRepo(db_mod.pool(dsn))
+        cpool = db_mod.pool(dsn)
+        repo = repo_mod.AttackRepo(cpool)
         repo.ensure_schema()
-        return repo
+        return repo, stats_repo_mod.StatsRepo(cpool, tz=config.env("DASHBOARD_TZ", "Asia/Ho_Chi_Minh"))
     except Exception as exc:
         log.error("cannot init attack repo, bỏ qua lưu DB", error=str(exc))
-        return None
+        return None, None
 
 
 def main() -> None:
@@ -43,9 +46,10 @@ def main() -> None:
 
     store = store_mod.AggregateStore()
     hub = StreamHub()
-    repo = _init_repo()
+    repo, stats = _init_repo()
     handler = consumer_mod.build_handler(store, hub, repo)
-    app = app_mod.create_app(store, hub, repo, links=app_mod.parse_links(config.env("DASHBOARD_LINKS", "")))
+    app = app_mod.create_app(store, hub, repo, links=app_mod.parse_links(config.env("DASHBOARD_LINKS", "")),
+                             stats=stats)
 
     @app.on_event("startup")
     def _startup() -> None:

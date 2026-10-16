@@ -36,6 +36,9 @@ public final class EnvelopeFactory {
         data.put("method", event.method());
         data.put("url", event.url());
         data.put("host", event.host());
+        data.put("status", event.status());
+        data.put("user_agent", event.userAgent());
+        data.put("score", match.weight());
         data.put("field", match.field());
         data.put("matched_value", match.matchedValue());
         data.put("evidence", match.description());
