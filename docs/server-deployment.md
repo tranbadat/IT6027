@@ -8,7 +8,7 @@ Người dùng ─HTTPS:443 (Let's Encrypt)───► Nginx (Ubuntu)        AC
 Người dùng ─HTTP:80─────────────────────► Nginx (Ubuntu)        ACCESS_MODE=direct-http
                                             ├─ service1/2/3.tranbadat.vn  site demo, log -> /var/log/nginx/waf/<domain>.access.log
                                             ├─ waf.tranbadat.vn           -> 127.0.0.1:8080  gateway (dashboard realtime)
-                                            └─ mail.tranbadat.vn          -> 127.0.0.1:8025  Mailpit (có đăng nhập)
+                                            └─ mailpit.tranbadat.vn       -> 127.0.0.1:8025  Mailpit (có đăng nhập)
 
 Docker (ENV=production):
   platform  Kafka, Postgres, P1–P5, gateway, Mailpit
@@ -16,7 +16,7 @@ Docker (ENV=production):
   sensor    C1, đọc /var/log/nginx/waf (chỉ đọc)
 ```
 
-Request tới site demo được Nginx ghi log; C1 đọc log, pipeline phát hiện tấn công, dashboard `waf.tranbadat.vn` hiển thị realtime và P4 gửi email cảnh báo vào Mailpit (`mail.tranbadat.vn`).
+Request tới site demo được Nginx ghi log; C1 đọc log, pipeline phát hiện tấn công, dashboard `waf.tranbadat.vn` hiển thị realtime và P4 gửi email cảnh báo vào Mailpit (`mailpit.tranbadat.vn`).
 
 ## Yêu cầu
 
@@ -26,7 +26,7 @@ Request tới site demo được Nginx ghi log; C1 đọc log, pipeline phát hi
 
 ## 1. DNS và cách truy cập (`ACCESS_MODE`)
 
-Trong cả ba chế độ, tạo bản ghi A cho `service1`, `service2`, `service3`, `waf`, `mail` trỏ về IP máy chủ, rồi đặt `ACCESS_MODE` trong `deploy/server/server.env`. Script tự làm phần còn lại.
+Trong cả ba chế độ, tạo bản ghi A cho `service1`, `service2`, `service3`, `waf`, `mailpit` trỏ về IP máy chủ, rồi đặt `ACCESS_MODE` trong `deploy/server/server.env`. Script tự làm phần còn lại.
 
 | `ACCESS_MODE` | DNS | HTTPS | Script tự làm |
 |---|---|---|---|
@@ -78,7 +78,7 @@ Chạy lại `make server-up` sau khi `git pull` hoặc sửa `server.env`: scri
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
 | `WAF_DOMAIN` | `waf.tranbadat.vn` | Dashboard realtime |
-| `MAIL_DOMAIN` | `mail.tranbadat.vn` | Mailpit (email cảnh báo) |
+| `MAIL_DOMAIN` | `mailpit.tranbadat.vn` | Mailpit (email cảnh báo) |
 | `DEMO_DOMAINS` | `service1/2/3.tranbadat.vn` | Các site demo được giám sát, cách nhau bằng dấu cách |
 | `ACCESS_MODE` | `cloudflare` | `cloudflare`, `direct-https` hoặc `direct-http` (mục 1) |
 | `LETSENCRYPT_EMAIL` | rỗng | `direct-https`: email nhận thông báo của Let's Encrypt |
@@ -98,7 +98,7 @@ Chạy lại `make server-up` sau khi `git pull` hoặc sửa `server.env`: scri
    curl "https://service2.tranbadat.vn/api/products?id=1%20UNION%20SELECT%20password%20FROM%20users--"
    curl "https://service3.tranbadat.vn/api/load?file=../../../../etc/passwd"
    ```
-3. Sự kiện xuất hiện ở mục Sự kiện realtime; cảnh báo có email trong `https://mail.tranbadat.vn`.
+3. Sự kiện xuất hiện ở mục Sự kiện realtime; cảnh báo có email trong `https://mailpit.tranbadat.vn`.
 
 ## 5. Kịch bản kiểm thử end-to-end và đo độ trễ
 

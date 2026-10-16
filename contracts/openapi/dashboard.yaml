@@ -257,7 +257,7 @@ paths:
               example:
                 links:
                   - name: Mailpit (email cảnh báo)
-                    url: https://mail.tranbadat.vn
+                    url: https://mailpit.tranbadat.vn
         '401':
           $ref: '#/components/responses/Unauthorized'
   /healthz:
