@@ -11,7 +11,7 @@ NGINX_LOG_DIR := /var/log/waf/nginx
 
 .DEFAULT_GOAL := help
 .PHONY: help init config up down restart ps logs clean smoke e2e test test-python test-java net build deploy-init deploy-env deploy-up deploy-down deploy-ps server-up server-down e2e-server obs-up obs-down demo demo-apache test-alert build-base \
-        tail-logs rotate-logs mock-reload bus-topology bus-purge bus-peek geoip lint-contracts experiment loadtest
+        tail-logs rotate-logs mock-reload bus-topology bus-purge bus-peek geoip lint-contracts experiment loadtest record-demo
 
 help: ## Liệt kê các lệnh
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -116,6 +116,9 @@ demo: ## Gửi request thử (bình thường + tấn công mẫu) tới Nginx m
 demo-apache: ## Gửi request thử tới Apache mục tiêu (cần profile apache)
 	@set -a; . ./.env; set +a; \
 	TARGET_URL="http://127.0.0.1:$${WEB_APACHE_PORT:-8082}" HOST_HEADER=blog.local ./scripts/attack-demo.sh
+
+record-demo: ## Ghi video demo các kịch bản vào docs/report/demo-video: make record-demo [k="kb1 kb2 kb3"] (kb4 cần mật khẩu máy chủ)
+	@./scripts/record-demo/run.sh $(k)
 
 test-alert: ## Gửi cảnh báo MẪU qua SMTP (mailpit) + webhook để kiểm tra đường cảnh báo
 	@./scripts/send-test-alert.sh

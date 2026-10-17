@@ -7,3 +7,9 @@ docs/design/*.html
 
 # Cấu hình máy chủ thật (có mật khẩu), xem deploy/server/server.env.example
 deploy/server/server.env
+
+# Ghi video demo (scripts/record-demo): môi trường ảo, kết quả kiểm thử tải tạm và video đầu ra
+.cache/
+docs/report/demo-video/
+record-demo
+docs/source.txt
